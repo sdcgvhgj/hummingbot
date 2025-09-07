@@ -21,7 +21,7 @@ from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativ
 from hummingbot.connector.trading_rule import TradingRule
 from hummingbot.connector.utils import combine_to_hb_trading_pair
 from hummingbot.core.clock import Clock
-from hummingbot.core.data_type.common import OrderType, PositionMode, PositionSide, TradeType
+from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, PositionSide, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState, OrderUpdate, TradeUpdate
 from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTrackerDataSource
 from hummingbot.core.data_type.trade_fee import TokenAmount, TradeFeeBase
@@ -516,6 +516,7 @@ class GateIoPerpetualDerivative(PerpetualDerivativePyBase):
                  quote_currency: str,
                  order_type: OrderType,
                  order_side: TradeType,
+                 position_action: PositionAction,
                  amount: Decimal,
                  price: Decimal = s_decimal_NaN,
                  is_maker: Optional[bool] = None) -> TradeFeeBase:
