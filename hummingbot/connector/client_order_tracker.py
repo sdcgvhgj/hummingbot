@@ -397,6 +397,7 @@ class ClientOrderTracker:
                 previous_state != new_state and
                 new_state not in [OrderState.CANCELED, OrderState.FAILED, OrderState.PENDING_CANCEL]):
             self.logger().info(tracked_order.build_order_created_message())
+            self.logger().info(f"Order-creation timestamp is {tracked_order.last_update_timestamp}")
             self._trigger_created_event(tracked_order)
 
     def _trigger_order_fills(self,
@@ -413,6 +414,7 @@ class ClientOrderTracker:
                 f"amounting to {tracked_order.executed_amount_base}/{tracked_order.amount} {tracked_order.base_asset} "
                 f"has been filled at {fill_price} {tracked_order.quote_asset}."
             )
+            self.logger().info(f"Order-fill timestamp is {tracked_order.last_update_timestamp}")
             self._trigger_filled_event(
                 order=tracked_order,
                 fill_amount=fill_amount,
@@ -433,6 +435,7 @@ class ClientOrderTracker:
         elif tracked_order.is_filled:
             self._trigger_completed_event(tracked_order)
             self.logger().info(f"{tracked_order.trade_type.name.upper()} order {tracked_order.client_order_id} completely filled.")
+            self.logger.info(f"Order-complete timestamp is {tracked_order.last_update_timestamp}")
 
         elif tracked_order.is_failure:
             self._trigger_failure_event(tracked_order, order_update)
