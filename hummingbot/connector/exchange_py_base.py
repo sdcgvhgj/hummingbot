@@ -182,6 +182,11 @@ class ExchangePyBase(ExchangeBase, ABC):
         not ready it returns False.
         """
         return all(self.status_dict.values())
+    
+    def not_ready_reason(self) -> str:
+        status_dict = self.status_dict
+        keys_not_ready = [k for k, v in status_dict.items() if not v]
+        return ','.join(keys_not_ready)
 
     @property
     def name_cap(self) -> str:
@@ -413,6 +418,8 @@ class ExchangePyBase(ExchangeBase, ABC):
             price = self.quantize_order_price(trading_pair, price)
         quantized_amount = self.quantize_order_amount(trading_pair=trading_pair, amount=amount)
 
+        self.logger().info(f"Creating order, timestamp is {self.current_timestamp}")
+
         self.start_tracking_order(
             order_id=order_id,
             exchange_order_id=None,
@@ -468,6 +475,7 @@ class ExchangePyBase(ExchangeBase, ABC):
             )
 
     async def _place_order_and_process_update(self, order: InFlightOrder, **kwargs) -> str:
+        self.logger().info("About to place order")
         exchange_order_id, update_timestamp = await self._place_order(
             order_id=order.client_order_id,
             trading_pair=order.trading_pair,
