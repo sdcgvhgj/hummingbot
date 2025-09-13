@@ -417,8 +417,8 @@ class PositionExecutor(ExecutorBase):
         :return: True if the close price is within the activation bounds, False otherwise.
         """
         activation_bounds = self.config.activation_bounds
-        mid_price = self.get_price(self.config.connector_name, self.config.trading_pair, PriceType.MidPrice)
         if activation_bounds:
+            mid_price = self.get_price(self.config.connector_name, self.config.trading_pair, PriceType.MidPrice)
             if order_type.is_limit_type():
                 if side == TradeType.BUY:
                     return order_price >= mid_price * (1 - activation_bounds[0])
