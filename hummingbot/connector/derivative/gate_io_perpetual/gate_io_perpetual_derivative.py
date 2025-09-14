@@ -453,7 +453,7 @@ class GateIoPerpetualDerivative(PerpetualDerivativePyBase):
                 self._format_size_to_amount(order.trading_pair, (Decimal(str(order_fill["size"])))) * Decimal(
                     order_fill["price"])),
             fill_price=Decimal(order_fill["price"]),
-            fill_timestamp=order_fill["create_time"],
+            fill_timestamp=float(order_fill["create_time_ms"])*1e-3,
         )
         return trade_update
 
@@ -480,7 +480,7 @@ class GateIoPerpetualDerivative(PerpetualDerivativePyBase):
 
         order_update = OrderUpdate(
             trading_pair=order.trading_pair,
-            update_timestamp=int(order_status["create_time"]),
+            update_timestamp=float(order_status["create_time_ms"])*1e-3,
             new_state=state,
             client_order_id=client_order_id,
             exchange_order_id=str(order_status["id"]),
