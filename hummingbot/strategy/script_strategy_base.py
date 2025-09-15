@@ -70,6 +70,9 @@ class ScriptStrategyBase(StrategyPyBase):
             if not self.ready_to_trade:
                 for con in [c for c in self.connectors.values() if not c.ready]:
                     self.logger().warning(f"{con.name} is not ready due to {con.not_ready_reason()}. Please wait...")
+                # Print concerned info if connectors are first ready to trade
+                for connector in self.connectors.values():
+                    self.logger().debug(f"Trading-pairs for {connector.name}: {connector.trading_rules.keys()}")
                 return
         else:
             self.on_tick()
