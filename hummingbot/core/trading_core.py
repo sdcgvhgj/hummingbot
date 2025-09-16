@@ -463,10 +463,36 @@ class TradingCore:
         """Initialize a script strategy using consolidated approach."""
         script_strategy_class, config = self.load_script_class(self.strategy_name)
 
+        # Get supported trading_pairs for every connector
+        supported_trading_pairs = dict()
+        conns = script_strategy_class.markets.keys()
+        temp_connectors = dict()
+        for con in conns:
+            temp_connectors[con] = self.connector_manager.create_connector(
+                con, [], self._trading_required
+            )
+            temp_connectors[con].start(Clock(ClockMode.REALTIME), 0)
+        while True:
+            all_loaded = all(ex.status_dict["trading_rule_initialized"] for ex in temp_connectors.values())
+            self.logger().debug("Trading rules for temp-connectors are not ready")
+            if all_loaded:
+                break
+            await asyncio.sleep(1)
+
+        supported_trading_pairs = {
+            con: set(ex.trading_rules.keys()) for con, ex in temp_connectors.items()
+        }
+        self.logger().info("Got supported trading-pairs for connectors")
+        for con in conns:
+            temp_connectors[con].stop(Clock(ClockMode.REALTIME))
+            self.connector_manager.remove_connector(con)
+
         # Get markets from script class
         markets_list = []
         for conn, pairs in script_strategy_class.markets.items():
-            markets_list.append((conn, list(pairs)))
+            supported_pairs = [pair for pair in pairs if pair in supported_trading_pairs[conn]]
+            self.logger().info(f"Supported pairs of {conn}: {','.join(supported_pairs)}")
+            markets_list.append((conn, list(supported_pairs)))
 
         # Initialize markets using single method
         self.initialize_markets(markets_list)
