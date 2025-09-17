@@ -105,12 +105,16 @@ class FundingRateArbitrage(StrategyV2Base):
         if token in self.tokens_supported_exchange_map:
             return self.tokens_supported_exchange_map[token]
         supported_connectors = []
-        for connector_name, connector in self.connectors.keys():
+        for connector_name, connector in self.connectors.items():
             trading_pair = self.get_trading_pair_for_connector(token, connector_name)
             if trading_pair in connector.trading_pairs:
                 supported_connectors.append(connector_name)
-        self.logger.info(f"Token {token} is supported by {','.join(supported_connectors)}")
+        if len(supported_connectors) == 0:
+            self.logger().warning(f"Token {token} is supported by NO exchanges")
+        else:
+            self.logger().info(f"Token {token} is supported by {','.join(supported_connectors)}")
         self.tokens_supported_exchange_map[token] = supported_connectors
+        return supported_connectors
 
 
     def apply_initial_setting(self):
@@ -206,7 +210,6 @@ class FundingRateArbitrage(StrategyV2Base):
                 best_combination = self.get_most_trade_profitable_combination(prices_and_fees_cache,
                                                                               funding_info_report, token)
                 if not best_combination:
-                    self.logger().debug(f"No valid combination for token {token}")
                     continue
                 connector_1, connector_2, trade_side, expected_profitability, \
                         rate_1, rate_2, price_1, price_2, fee_1, fee_2 = best_combination
@@ -242,6 +245,7 @@ class FundingRateArbitrage(StrategyV2Base):
         If that PNL is greater than the profitability_to_take_profit
         """
         stop_executor_actions = []
+        stopped_tokens = []
         for token, funding_arbitrage_info in self.active_funding_arbitrages.items():
             executors = self.filter_executors(
                 executors=self.get_all_executors(),
@@ -251,18 +255,23 @@ class FundingRateArbitrage(StrategyV2Base):
             executors_pnl = sum(executor.net_pnl_quote for executor in executors)
             fee_1, fee_2 = funding_arbitrage_info["fee_1"], funding_arbitrage_info["fee_2"]
             take_profit_pnl_threshold = \
-                (self.config.min_trade_profitability - fee_1 - fee_2) * self.config.position_size_quote
+                (self.config.min_trade_profitability + fee_1 + fee_2) * self.config.position_size_quote
             take_profit_condition = executors_pnl + funding_payments_pnl > take_profit_pnl_threshold
+            # TODO strengthen stop_loss_condition
             stop_loss_condition = len(funding_arbitrage_info["funding_payments"]) > 1
             if take_profit_condition:
-                self.logger().info("Take profit profitability reached, stopping executors")
-                self.logger().info(f"{executors_pnl=}, {funding_payments_pnl=}, {take_profit_pnl_threshold=}")
+                self.logger().info("Take profit profitability reached, stopping executors, "
+                                   f"{executors_pnl=:.4f}, {funding_payments_pnl=:.4f}, {take_profit_pnl_threshold=:.4f}")
+                stopped_tokens.append(token)
                 self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
                 stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
             elif stop_loss_condition:
                 self.logger().info("Stop loss condition satisfied, stopping executors")
+                stopped_tokens.append(token)
                 self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
                 stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
+        for token in stopped_tokens:
+            self.active_funding_arbitrages.pop(token, None)
         return stop_executor_actions
 
     def did_complete_funding_payment(self, funding_payment_completed_event: FundingPaymentCompletedEvent):
@@ -317,7 +326,8 @@ class FundingRateArbitrage(StrategyV2Base):
 
                 best_paths_info = {"token": token}
                 prices_and_fees_cache = dict()
-                best_combination = self.get_most_trade_profitable_combination(prices_and_fees_cache, token)
+                best_combination = self.get_most_trade_profitable_combination(prices_and_fees_cache, \
+                                                                               funding_info_report, token)
                 if best_combination:
                     connector_1, connector_2, trade_side, expected_profitability, \
                         rate_1, rate_2, price_1, price_2, fee_1, fee_2 = best_combination
