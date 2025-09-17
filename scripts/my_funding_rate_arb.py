@@ -90,7 +90,7 @@ class FundingRateArbitrage(StrategyV2Base):
         self.config = config
         self.active_funding_arbitrages = {}
         self.stopped_funding_arbitrages = {token: [] for token in self.config.tokens}
-        self.tokens_supported_exchange_map = None
+        self.tokens_supported_exchange_map = dict()
 
     def start(self, clock: Clock, timestamp: float) -> None:
         """
@@ -101,18 +101,16 @@ class FundingRateArbitrage(StrategyV2Base):
         self._last_timestamp = timestamp
         self.apply_initial_setting()
 
-    def init_tokens_supported_exchange_map(self):
-        if self.tokens_supported_exchange_map:
-            return
-        self.tokens_supported_exchange_map = dict()
-        for token in self.config.tokens:
-            supported_connectors = []
-            for connector_name, connector in self.connectors.keys():
-                trading_pair = self.get_trading_pair_for_connector(token, connector_name)
-                if trading_pair in connector.trading_pairs:
-                    supported_connectors.append(connector_name)
-            self.logger.info(f"Token {token} is supported by {','.join(supported_connectors)}")
-            self.tokens_supported_exchange_map[token] = supported_connectors
+    def token_supported_exchange(self, token: str):
+        if token in self.tokens_supported_exchange_map:
+            return self.tokens_supported_exchange_map[token]
+        supported_connectors = []
+        for connector_name, connector in self.connectors.keys():
+            trading_pair = self.get_trading_pair_for_connector(token, connector_name)
+            if trading_pair in connector.trading_pairs:
+                supported_connectors.append(connector_name)
+        self.logger.info(f"Token {token} is supported by {','.join(supported_connectors)}")
+        self.tokens_supported_exchange_map[token] = supported_connectors
 
 
     def apply_initial_setting(self):
@@ -127,75 +125,12 @@ class FundingRateArbitrage(StrategyV2Base):
         """
         This method provides the funding rates across all the connectors
         """
-        self.init_tokens_supported_exchange_map()
         funding_rates = {}
-        for connector_name in self.tokens_supported_exchange_map[token]:
+        for connector_name in self.token_supported_exchange(token):
             connector = self.connectors[connector_name]
             trading_pair = self.get_trading_pair_for_connector(token, connector_name)
             funding_rates[connector_name] = connector.get_funding_info(trading_pair)
         return funding_rates
-
-    # def get_current_profitability_after_fees(self, token: str, connector_1: str, connector_2: str, side: TradeType):
-    #     """
-    #     This methods compares the profitability of buying at market in the two exchanges. If the side is TradeType.BUY
-    #     means that the operation is long on connector 1 and short on connector 2.
-    #     """
-    #     trading_pair_1 = self.get_trading_pair_for_connector(token, connector_1)
-    #     trading_pair_2 = self.get_trading_pair_for_connector(token, connector_2)
-
-    #     connector_1_price = Decimal(self.market_data_provider.get_price_for_quote_volume(
-    #         connector_name=connector_1,
-    #         trading_pair=trading_pair_1,
-    #         quote_volume=self.config.position_size_quote,
-    #         is_buy=side == TradeType.BUY,
-    #     ).result_price)
-    #     connector_2_price = Decimal(self.market_data_provider.get_price_for_quote_volume(
-    #         connector_name=connector_2,
-    #         trading_pair=trading_pair_2,
-    #         quote_volume=self.config.position_size_quote,
-    #         is_buy=side != TradeType.BUY,
-    #     ).result_price)
-    #     estimated_fees_connector_1 = self.connectors[connector_1].get_fee(
-    #         base_currency=trading_pair_1.split("-")[0],
-    #         quote_currency=trading_pair_1.split("-")[1],
-    #         order_type=OrderType.MARKET,
-    #         order_side=TradeType.BUY,
-    #         amount=self.config.position_size_quote / connector_1_price,
-    #         price=connector_1_price,
-    #         is_maker=False,
-    #         position_action=PositionAction.OPEN
-    #     ).percent
-    #     estimated_fees_connector_2 = self.connectors[connector_2].get_fee(
-    #         base_currency=trading_pair_2.split("-")[0],
-    #         quote_currency=trading_pair_2.split("-")[1],
-    #         order_type=OrderType.MARKET,
-    #         order_side=TradeType.BUY,
-    #         amount=self.config.position_size_quote / connector_2_price,
-    #         price=connector_2_price,
-    #         is_maker=False,
-    #         position_action=PositionAction.OPEN
-    #     ).percent
-
-    #     if side == TradeType.BUY:
-    #         estimated_trade_pnl_pct = (connector_2_price - connector_1_price) / connector_1_price
-    #     else:
-    #         estimated_trade_pnl_pct = (connector_1_price - connector_2_price) / connector_2_price
-    #     return estimated_trade_pnl_pct - estimated_fees_connector_1 - estimated_fees_connector_2
-
-    # def get_most_profitable_combination(self, funding_info_report: Dict):
-    #     best_combination = None
-    #     highest_profitability = 0
-    #     for connector_1 in funding_info_report:
-    #         for connector_2 in funding_info_report:
-    #             if connector_1 != connector_2:
-    #                 rate_connector_1 = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_1)
-    #                 rate_connector_2 = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_2)
-    #                 funding_rate_diff = abs(rate_connector_1 - rate_connector_2) * self.funding_profitability_interval
-    #                 if funding_rate_diff > highest_profitability:
-    #                     trade_side = TradeType.BUY if rate_connector_1 < rate_connector_2 else TradeType.SELL
-    #                     highest_profitability = funding_rate_diff
-    #                     best_combination = (connector_1, connector_2, trade_side, funding_rate_diff)
-    #     return best_combination
 
     def get_price_and_fee_with_cache(self, prices_and_fees_cache: Dict, connector_name, token: str, side: TradeType):
         if connector_name in prices_and_fees_cache:
@@ -263,7 +198,6 @@ class FundingRateArbitrage(StrategyV2Base):
         at market to open the possibilities for other people to create variations like sending limit position executors
         and if one gets filled buy market the other one to improve the entry prices.
         """
-        self.init_tokens_supported_exchange_map()
         create_actions = []
         for token in self.config.tokens:
             if token not in self.active_funding_arbitrages:
