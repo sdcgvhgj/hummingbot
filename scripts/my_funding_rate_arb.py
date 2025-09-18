@@ -72,6 +72,11 @@ class FundingRateArbitrage(StrategyV2Base):
         "binance_perpetual": 60 * 60 * 8,
         "hyperliquid_perpetual": 60 * 60 * 1
     }
+    position_mode_map = {
+        "hyperliquid_perpetual": PositionMode.ONEWAY,
+        "okx_perpetual" : PositionMode.ONEWAY,
+        "gate_io_perpetual": PositionMode.ONEWAY,
+    }
 
     @classmethod
     def get_trading_pair_for_connector(cls, token, connector):
@@ -120,8 +125,7 @@ class FundingRateArbitrage(StrategyV2Base):
     def apply_initial_setting(self):
         for connector_name, connector in self.connectors.items():
             if self.is_perpetual(connector_name):
-                position_mode = PositionMode.ONEWAY if connector_name == "hyperliquid_perpetual" else PositionMode.HEDGE
-                connector.set_position_mode(position_mode)
+                connector.set_position_mode(self.position_mode_map.get(connector_name, PositionMode.HEDGE))
                 for trading_pair in self.market_data_provider.get_trading_pairs(connector_name):
                     connector.set_leverage(trading_pair, self.config.leverage)
 
