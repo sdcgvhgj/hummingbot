@@ -1,6 +1,7 @@
 import os
 from decimal import Decimal
 from typing import Dict, List, Set
+from datetime import datetime, timedelta
 
 import pandas as pd
 from pydantic import Field, field_validator
@@ -172,7 +173,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 valid_connectors.append(connector)
         # Find best combination
         best_combination = None
-        highest_profitability = -100
+        highest_profitability = Decimal(-100)
         for connector_1 in valid_connectors:
             for connector_2 in valid_connectors:
                 if connector_1 != connector_2:
@@ -315,6 +316,18 @@ class FundingRateArbitrage(StrategyV2Base):
         )
         return position_executor_config_1, position_executor_config_2
 
+    def format_percent(self, x) -> str:
+        return f"{x:>7.3%}"
+    
+    def format_time(self, x) -> str:
+        sign = ' ' if x > 0 else '-'
+        x = abs(x)
+        hours, remainder = divmod(x, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        
+        return f"{sign}{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
+
+
     def format_status(self) -> str:
         original_status = super().format_status()
         funding_rate_status = []
@@ -336,27 +349,46 @@ class FundingRateArbitrage(StrategyV2Base):
                     connector_1, connector_2, trade_side, expected_profitability, \
                         rate_1, rate_2, price_1, price_2, fee_1, fee_2 = best_combination
                     best_paths_info["Best Path"] = f"{connector_1}_{connector_2}"
-                    best_paths_info["Pirce Diff"] = f"{(price_2 - price_1) / price_1:.3%}"
-                    best_paths_info["Rate Diff"] = f"{(rate_2 - rate_1):.3%}"
-                    best_paths_info["Fees"] = f"{(fee_1 + fee_2):.3%}"
-                    best_paths_info["Trade Profit"] = f"{expected_profitability:.3%}"
+                    best_paths_info["Pirce Diff"] = self.format_percent((price_2 - price_1) / price_1)
+                    best_paths_info["Rate Diff"] = self.format_percent((rate_2 - rate_1))
+                    best_paths_info["Fees"] = self.format_percent((fee_1 + fee_2))
+                    best_paths_info["Trade Profit"] = self.format_percent(expected_profitability)
 
                     time_to_next_funding_info_c1 = funding_info_report[connector_1].next_funding_utc_timestamp - self.current_timestamp
                     time_to_next_funding_info_c2 = funding_info_report[connector_2].next_funding_utc_timestamp - self.current_timestamp
-                    best_paths_info["Time to Funding 1"] = f"{time_to_next_funding_info_c1 / 60:.1f}"
-                    best_paths_info["Time to Funding 2"] = f"{time_to_next_funding_info_c2 / 60:.1f}"
+                    best_paths_info["Time to Funding 1"] = self.format_time(time_to_next_funding_info_c1)
+                    best_paths_info["Time to Funding 2"] = self.format_time(time_to_next_funding_info_c2)
                     all_best_paths.append(best_paths_info)
 
             funding_rate_status.append(f"\n\n\nMin Trade Profitability: {self.config.min_trade_profitability:.2%}")
             funding_rate_status.append("Funding Rate Info")
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_funding_info), table_format="psql",))
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_best_paths), table_format="psql",))
+
+            funding_rate_status.append(f"\n\n\nActive Funding Arbitrages:")
+            active_arbitrage_info = []
             for token, funding_arbitrage_info in self.active_funding_arbitrages.items():
-                long_connector = funding_arbitrage_info["connector_1"] if funding_arbitrage_info["side"] == TradeType.BUY else funding_arbitrage_info["connector_2"]
-                short_connector = funding_arbitrage_info["connector_2"] if funding_arbitrage_info["side"] == TradeType.BUY else funding_arbitrage_info["connector_1"]
-                funding_rate_status.append(f"Token: {token}")
-                funding_rate_status.append(f"Long connector: {long_connector} | Short connector: {short_connector}")
-                funding_rate_status.append(f"Funding Payments Collected: {funding_arbitrage_info['funding_payments']}")
-                funding_rate_status.append(f"Executors: {funding_arbitrage_info['executors_ids']}")
-                funding_rate_status.append("-" * 50 + "\n")
+                arbitrage_info = { "token": token }
+                arbitrage_info["Connector 1"] = funding_arbitrage_info["connector_1"]
+                arbitrage_info["Connector 2"] = funding_arbitrage_info["connector_2"]
+                funding_payments_pnl = \
+                    sum(funding_payment.amount for funding_payment in funding_arbitrage_info["funding_payments"]) \
+                    / self.config.position_size_quote
+                price_1, price_2 = funding_arbitrage_info["price_1"], funding_arbitrage_info["price_2"]
+                rate_1, rate_2 = funding_arbitrage_info["rate_1"], funding_arbitrage_info["rate_2"]
+                fee_1, fee_2 = funding_arbitrage_info["fee_1"], funding_arbitrage_info["fee_2"]
+                arbitrage_info["Price Diff (Open)"] = self.format_percent((price_2 - price_1) / price_1)
+                arbitrage_info["Fund Diff (Open)"] = self.format_percent(rate_2 - rate_1)
+                arbitrage_info["Fee 1+Fee 2"] = self.format_percent(fee_1 + fee_2)
+                c_price_1, _ = self.get_price_and_fee_with_cache( \
+                    {}, funding_arbitrage_info["connector_1"], token, TradeType.SELL)
+                c_price_2, _ = self.get_price_and_fee_with_cache( \
+                    {}, funding_arbitrage_info["connector_2"], token, TradeType.BUY)
+                arbitrage_info["Funding Pnl"] = funding_payments_pnl
+                arbitrage_info["Price Diff (Target)"] = self.format_percent((price_2 - price_1) / price_1 \
+                    + funding_payments_pnl - 2 * fee_1 - 2 * fee_2 - self.config.min_trade_profitability)
+                arbitrage_info["Price Diff (Current)"] = self.format_percent((c_price_2 - c_price_1) / price_1)
+                active_arbitrage_info.append(arbitrage_info)
+            funding_rate_status.append( \
+                format_df_for_printout(df=pd.DataFrame(active_arbitrage_info), table_format="psql",))
         return original_status + "\n".join(funding_rate_status)
