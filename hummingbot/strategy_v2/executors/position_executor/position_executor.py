@@ -769,6 +769,8 @@ class PositionExecutor(ExecutorBase):
 
     async def validate_sufficient_balance(self):
         if self.is_perpetual:
+            # Do not validate sufficient balance for perpetual due to possible bugs
+            return True
             order_candidate = PerpetualOrderCandidate(
                 trading_pair=self.config.trading_pair,
                 is_maker=self.config.triple_barrier_config.open_order_type.is_limit_type(),

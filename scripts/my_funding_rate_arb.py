@@ -16,6 +16,7 @@ from hummingbot.strategy.strategy_v2_base import StrategyV2Base, StrategyV2Confi
 from hummingbot.strategy_v2.executors.position_executor.data_types import PositionExecutorConfig, TripleBarrierConfig
 from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, StopExecutorAction
 
+COOL_DOWN_COUNT = 60 * 60
 
 class FundingRateArbitrageConfig(StrategyV2ConfigBase):
     script_file_name: str = os.path.basename(__file__)
@@ -97,6 +98,7 @@ class FundingRateArbitrage(StrategyV2Base):
         self.active_funding_arbitrages = {}
         self.stopped_funding_arbitrages = {token: [] for token in self.config.tokens}
         self.tokens_supported_exchange_map = dict()
+        self.token_failure_cool_down = {token: 0 for token in self.config.tokens}
 
     def start(self, clock: Clock, timestamp: float) -> None:
         """
@@ -197,6 +199,11 @@ class FundingRateArbitrage(StrategyV2Base):
                         best_combination = (connector_1, connector_2, trade_side, trade_profit, \
                                             rate_1, rate_2, price_1, price_2, fee_1, fee_2)
         return best_combination
+    
+    def enough_balance(self, connector_name):
+        connector = self.connectors[connector_name]
+        avail_usd = float(connector.available_balances.get(self.quote_markets_map.get(connector_name, 'USDT'), 0))
+        return avail_usd >= float(self.config.position_size_quote) / float(self.config.leverage), avail_usd
 
     def create_actions_proposal(self) -> List[CreateExecutorAction]:
         """
@@ -210,6 +217,9 @@ class FundingRateArbitrage(StrategyV2Base):
         create_actions = []
         for token in self.config.tokens:
             if token not in self.active_funding_arbitrages:
+                self.token_failure_cool_down[token] -= 1
+                if self.token_failure_cool_down[token] > 0:
+                    continue
                 prices_and_fees_cache = dict()
                 funding_info_report = self.get_funding_info_by_token(token)
                 best_combination = self.get_most_trade_profitable_combination(prices_and_fees_cache,
@@ -223,6 +233,13 @@ class FundingRateArbitrage(StrategyV2Base):
                                        f"rate_1={rate_1} | rate_2={rate_2} | price_1={price_1} | price_2={price_2} |"
                                        f"fee_1={fee_1} | fee_2={fee_2} | expected_profitability={expected_profitability} "
                                        f"Starting executors...")
+                    enough_1, balance_1 = self.enough_balance(connector_1)
+                    enough_2, balance_2 = self.enough_balance(connector_2)
+                    if not enough_1 or not enough_2:
+                        self.logger().warning(f"Balance Not enough for {connector_1 if not enough_1 else connector_2} "
+                                              f"({(balance_1 if not enough_1 else balance_2):.3f})"
+                                              f", didn't open positions")
+                        continue
                     position_executor_config_1, position_executor_config_2 = \
                             self.get_position_executors_config(token, connector_1, connector_2, trade_side)
                     self.active_funding_arbitrages[token] = {
@@ -238,6 +255,7 @@ class FundingRateArbitrage(StrategyV2Base):
                         "executors_ids": [position_executor_config_1.id, position_executor_config_2.id],
                         "side": trade_side,
                         "funding_payments": [],
+                        "start_time": self.current_timestamp
                     }
                     return [CreateExecutorAction(executor_config=position_executor_config_1),
                             CreateExecutorAction(executor_config=position_executor_config_2)]
@@ -256,6 +274,12 @@ class FundingRateArbitrage(StrategyV2Base):
                 executors=self.get_all_executors(),
                 filter_func=lambda x: x.id in funding_arbitrage_info["executors_ids"]
             )
+            error_occurred = any(ex.close_type for ex in executors)
+            if error_occurred:
+                self.logger().warning(f"Closed executor found, stopping executors")
+                self.token_failure_cool_down[token] = COOL_DOWN_COUNT
+                stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
+                continue
             funding_payments_pnl = sum(funding_payment.amount for funding_payment in funding_arbitrage_info["funding_payments"])
             executors_pnl = sum(executor.net_pnl_quote for executor in executors)
             fee_1, fee_2 = funding_arbitrage_info["fee_1"], funding_arbitrage_info["fee_2"]
@@ -377,17 +401,19 @@ class FundingRateArbitrage(StrategyV2Base):
                 price_1, price_2 = funding_arbitrage_info["price_1"], funding_arbitrage_info["price_2"]
                 rate_1, rate_2 = funding_arbitrage_info["rate_1"], funding_arbitrage_info["rate_2"]
                 fee_1, fee_2 = funding_arbitrage_info["fee_1"], funding_arbitrage_info["fee_2"]
-                arbitrage_info["Price Diff (Open)"] = self.format_percent((price_2 - price_1) / price_1)
-                arbitrage_info["Fund Diff (Open)"] = self.format_percent(rate_2 - rate_1)
-                arbitrage_info["Fee 1+Fee 2"] = self.format_percent(fee_1 + fee_2)
+                arbitrage_info["Px Diff"] = self.format_percent((price_2 - price_1) / price_1)
+                arbitrage_info["Fd Diff"] = self.format_percent(rate_2 - rate_1)
+                arbitrage_info["Fee1+Fee2"] = self.format_percent(fee_1 + fee_2)
                 c_price_1, _ = self.get_price_and_fee_with_cache( \
                     {}, funding_arbitrage_info["connector_1"], token, TradeType.SELL)
                 c_price_2, _ = self.get_price_and_fee_with_cache( \
                     {}, funding_arbitrage_info["connector_2"], token, TradeType.BUY)
-                arbitrage_info["Funding Pnl"] = funding_payments_pnl
-                arbitrage_info["Price Diff (Target)"] = self.format_percent((price_2 - price_1) / price_1 \
+                arbitrage_info["Fd Pnl"] = self.format_percent(funding_payments_pnl)
+                arbitrage_info["Px Diff(Tar)"] = self.format_percent((price_2 - price_1) / price_1 \
                     + funding_payments_pnl - 2 * fee_1 - 2 * fee_2 - self.config.min_trade_profitability)
-                arbitrage_info["Price Diff (Current)"] = self.format_percent((c_price_2 - c_price_1) / price_1)
+                arbitrage_info["Px Diff(Cur)"] = self.format_percent((c_price_2 - c_price_1) / price_1)
+                arbitrage_info["Hold Time"] = \
+                    self.format_time(self.current_timestamp - funding_arbitrage_info["start_time"])
                 active_arbitrage_info.append(arbitrage_info)
             funding_rate_status.append( \
                 format_df_for_printout(df=pd.DataFrame(active_arbitrage_info), table_format="psql",))
