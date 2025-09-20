@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from decimal import Decimal
 from typing import Dict, List, Optional, Union
 
@@ -66,6 +67,25 @@ class PositionExecutor(ExecutorBase):
         self._total_executed_amount_backup: Decimal = Decimal("0")
         self._current_retries = 0
         self._max_retries = max_retries
+
+        # Timestamp tracking
+        self.executor_create_timestamp = config.timestamp
+
+        self.open_order_create_timestamp = None
+        self.open_order_filled_timestamp = None
+        self.open_order_complete_timestamp = None
+
+        self.executor_earlystop_timestamp = None
+
+        self.close_order_create_timestamp = None
+        self.close_order_filled_timestamp = None
+        self.close_order_complete_timestamp = None
+
+        # Slippage tracking
+        self.expect_open_price = config.entry_price
+        self.actual_open_price = None
+        self.expect_close_price = None
+        self.actual_close_price = None
 
     @property
     def is_perpetual(self) -> bool:
@@ -605,14 +625,46 @@ class PositionExecutor(ExecutorBase):
         )
         self.logger().debug("Removing open order")
 
-    def early_stop(self, keep_position: bool = False):
+    def early_stop(self, keep_position: bool = False, stop_config: dict = None):
         """
         This method allows strategy to stop the executor early.
 
         :return: None
         """
+        if stop_config:
+            self.expect_close_price = stop_config.get('expect_close_price', None)
+        self.executor_earlystop_timestamp = time.time()
         self.close_type = CloseType.POSITION_HOLD if keep_position else CloseType.EARLY_STOP
         self._status = RunnableStatus.SHUTTING_DOWN
+    
+    def get_open_delay(self):
+        if self.executor_create_timestamp and self.open_order_complete_timestamp:
+            return self.open_order_complete_timestamp - self.executor_create_timestamp
+        return None
+
+    def get_close_delay(self):
+        if self.executor_earlystop_timestamp and self.close_order_complete_timestamp:
+            return self.close_order_complete_timestamp - self.executor_earlystop_timestamp
+        return None
+    
+    def get_open_slippage(self):
+        if self.expect_open_price and self.actual_open_price:
+            return abs(self.expect_open_price - self.actual_open_price) / self.expect_open_price
+        return None
+
+    def get_close_slippage(self):
+        if self.expect_close_price and self.actual_close_price:
+            return abs(self.expect_close_price - self.actual_close_price) / self.expect_close_price
+        return None
+    
+    def on_stop(self):
+        self.logger().info(f"Stopping position-executor, "
+                           f"close-type={self.close_type.value}, "
+                           f"open-delay={self.get_open_delay():.4f}s, "
+                           f"open-slippage={self.get_open_slippage():.4%}, "
+                           f"close-delay={self.get_close_delay():.4f}s, "
+                           f"close-slippage={self.get_close_slippage():.4%}, "
+                           f"trade-pnl-pct={self.trade_pnl_pct:.4%}")
 
     def update_tracked_orders_with_order_id(self, order_id: str):
         """
@@ -635,6 +687,10 @@ class PositionExecutor(ExecutorBase):
         This method is responsible for processing the order created event. Here we will update the TrackedOrder with the
         order_id.
         """
+        if self._open_order and self._open_order.order_id == event.order_id:
+            self.open_order_create_timestamp = event.last_update_timestamp
+        elif self._close_order and self._close_order.order_id == event.order_id:
+            self.close_order_create_timestamp = event.last_update_timestamp
         self.update_tracked_orders_with_order_id(event.order_id)
 
     def process_order_filled_event(self, _, market, event: OrderFilledEvent):
@@ -643,6 +699,10 @@ class PositionExecutor(ExecutorBase):
         _total_executed_amount_backup, that can be used if the InFlightOrder
         is not available.
         """
+        if self._open_order and self._open_order.order_id == event.order_id:
+            self.open_order_filled_timestamp = event.last_update_timestamp
+        elif self._close_order and self._close_order.order_id == event.order_id:
+            self.close_order_filled_timestamp = event.last_update_timestamp
         self.update_tracked_orders_with_order_id(event.order_id)
 
     def process_order_completed_event(self, _, market, event: Union[BuyOrderCompletedEvent, SellOrderCompletedEvent]):
@@ -650,6 +710,12 @@ class PositionExecutor(ExecutorBase):
         This method is responsible for processing the order completed event. Here we will check if the id is one of the
         tracked orders and update the state
         """
+        if self._open_order and self._open_order.order_id == event.order_id:
+            self.open_order_complete_timestamp = event.last_update_timestamp
+            self.actual_open_price = event.average_executed_price
+        elif self._close_order and self._close_order.order_id == event.order_id:
+            self.close_order_complete_timestamp = event.last_update_timestamp
+            self.actual_close_price = event.average_executed_price
         self._total_executed_amount_backup += event.base_asset_amount
         self.update_tracked_orders_with_order_id(event.order_id)
 
@@ -699,10 +765,24 @@ class PositionExecutor(ExecutorBase):
             "side": self.config.side,
             "current_retries": self._current_retries,
             "max_retries": self._max_retries,
+            "entry_price": self.entry_price,
             "close_price": self.close_price,
+            "trade_pnl_pct": self.trade_pnl_pct,
             "open_order_last_update": self._open_order.last_update_timestamp if self._open_order else None,
             "order_ids": [order.order_id for order in [self._open_order, self._close_order, self._take_profit_limit_order] if order],
             "held_position_orders": self._held_position_orders,
+            "open_delay": self.get_open_delay(),
+            "close_delay": self.get_close_delay(),
+            "open_sllipage": self.get_open_slippage(),
+            "close_sllipage": self.get_close_slippage(),
+            "expect_open_price": self.expect_open_price,
+            "expect_close_price": self.expect_close_price,
+            "actual_open_price": self.actual_open_price,
+            "actual_close_price": self.actual_close_price,
+            "executor_create_timestamp": self.executor_create_timestamp,
+            "open_order_complete_timestamp": self.open_order_complete_timestamp,
+            "executor_earlystop_timestamp": self.executor_earlystop_timestamp,
+            "close_order_complete_timestamp": self.close_order_complete_timestamp,
         }
 
     def to_format_status(self, scale=1.0):

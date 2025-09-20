@@ -320,6 +320,7 @@ class ClientOrderTracker:
                 exchange_order_id=order.exchange_order_id,
                 leverage=order.leverage,
                 position=order.position.value,
+                last_update_timestamp=order.last_update_timestamp,
             ),
         )
 
@@ -357,6 +358,7 @@ class ClientOrderTracker:
                 leverage=int(order.leverage),
                 position=order.position.value,
                 exchange_order_id=exchange_order_id,
+                last_update_timestamp=order.last_update_timestamp,
             ),
         )
 
@@ -376,6 +378,9 @@ class ClientOrderTracker:
                 order.executed_amount_quote,
                 order.order_type,
                 order.exchange_order_id,
+                position=order.position.value,
+                last_update_timestamp=order.last_update_timestamp,
+                average_executed_price=order.average_executed_price,
             ),
         )
 

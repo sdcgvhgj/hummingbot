@@ -27,6 +27,7 @@ class StopExecutorAction(ExecutorAction):
     """
     executor_id: str
     keep_position: Optional[bool] = False
+    stop_config: Optional[dict] = None
 
 
 class StoreExecutorAction(ExecutorAction):

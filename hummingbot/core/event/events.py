@@ -92,6 +92,9 @@ class BuyOrderCompletedEvent:
     quote_asset_amount: Decimal
     order_type: OrderType
     exchange_order_id: Optional[str] = None
+    position: Optional[str] = PositionAction.NIL.value
+    last_update_timestamp: Optional[float] = None
+    average_executed_price: Optional[float] = None
 
 
 @dataclass
@@ -104,6 +107,9 @@ class SellOrderCompletedEvent:
     quote_asset_amount: Decimal
     order_type: OrderType
     exchange_order_id: Optional[str] = None
+    position: Optional[str] = PositionAction.NIL.value
+    last_update_timestamp: Optional[float] = None
+    average_executed_price: Optional[float] = None
 
 
 @dataclass
@@ -171,6 +177,7 @@ class OrderFilledEvent(NamedTuple):
     exchange_order_id: str = ""
     leverage: Optional[int] = 1
     position: Optional[str] = PositionAction.NIL.value
+    last_update_timestamp: Optional[float] = None
 
     @classmethod
     def order_filled_events_from_order_book_rows(
@@ -231,6 +238,7 @@ class BuyOrderCreatedEvent:
     exchange_order_id: Optional[str] = None
     leverage: Optional[int] = 1
     position: Optional[str] = PositionAction.NIL.value
+    last_update_timestamp: Optional[float] = None
 
 
 @dataclass
@@ -245,6 +253,7 @@ class SellOrderCreatedEvent:
     exchange_order_id: Optional[str] = None
     leverage: Optional[int] = 1
     position: Optional[str] = PositionAction.NIL.value
+    last_update_timestamp: Optional[float] = None
 
 
 @dataclass
