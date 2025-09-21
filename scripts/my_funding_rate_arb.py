@@ -78,7 +78,7 @@ class FundingRateArbitrage(StrategyV2Base):
     }
     position_mode_map = {
         "hyperliquid_perpetual": PositionMode.ONEWAY,
-        "okx_perpetual" : PositionMode.ONEWAY,
+        "okx_perpetual" : PositionMode.HEDGE,
         "gate_io_perpetual": PositionMode.ONEWAY,
     }
 
@@ -494,7 +494,7 @@ class FundingRateArbitrage(StrategyV2Base):
 
             funding_rate_status.append(f"\nStopped Funding Arbitrages:")
             stopped_arbitrage_info = []
-            for token, funding_arbitrage_infos in self.stopped_funding_arbitrages:
+            for token, funding_arbitrage_infos in self.stopped_funding_arbitrages.items():
                 for funding_arbitrage_info in funding_arbitrage_infos:
                     arbitrage_info = {'token': token}
                     connector_1 = funding_arbitrage_info["connector_1"]
