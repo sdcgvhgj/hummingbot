@@ -270,10 +270,12 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
             **kwargs,
         )
 
-        data = exchange_order_id["data"][0]
-        if data["sCode"] != "0":
-            raise IOError(f"Error submitting order {order_id}: {data['sMsg']}")
-        return str(data["ordId"]), self.current_timestamp
+        data_res = exchange_order_id["data"][0]
+        if data_res["sCode"] != "0":
+            if 'Parameter posSide error' in data_res['sMsg']:
+                self.logger().debug(f"{self.position_mode=}, {position_action=}, {data['posSide']=}")
+            raise IOError(f"Error submitting order {order_id}: {data_res['sMsg']}")
+        return str(data_res["ordId"]), self.current_timestamp
 
     async def _place_cancel(self, order_id: str, tracked_order: InFlightOrder):
         data = {"instId": await self.exchange_symbol_associated_to_pair(tracked_order.trading_pair)}
