@@ -471,7 +471,7 @@ class TradingCore:
             temp_connectors[con] = self.connector_manager.create_connector(
                 con, [], self._trading_required
             )
-            temp_connectors[con].start(Clock(ClockMode.REALTIME), 0)
+            await temp_connectors[con].start_trading_rules_polling()
         while True:
             all_loaded = all(ex.status_dict["trading_rule_initialized"] for ex in temp_connectors.values())
             self.logger().debug("Trading rules for temp-connectors are not ready")
@@ -484,7 +484,7 @@ class TradingCore:
         }
         self.logger().info("Got supported trading-pairs for connectors")
         for con in conns:
-            temp_connectors[con].stop(Clock(ClockMode.REALTIME))
+            await temp_connectors[con].stop_trading_rules_polling()
             self.connector_manager.remove_connector(con)
 
         # Get markets from script class

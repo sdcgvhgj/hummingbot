@@ -674,6 +674,14 @@ class ExchangePyBase(ExchangeBase, ABC):
     #
     web_utils = None
 
+    async def start_trading_rules_polling(self):
+        self._trading_rules_polling_task = safe_ensure_future(self._trading_rules_polling_loop())
+    
+    async def stop_trading_rules_polling(self):
+        if self._trading_rules_polling_task is not None:
+            self._trading_rules_polling_task.cancel()
+            self._trading_rules_polling_task = None
+
     async def start_network(self):
         """
         Start all required tasks to update the status of the connector. Those tasks include:
