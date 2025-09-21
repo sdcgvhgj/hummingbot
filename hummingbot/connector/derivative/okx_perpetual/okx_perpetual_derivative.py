@@ -759,11 +759,13 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
         self._set_trading_pair_symbol_map(mapping)
 
     async def _trading_pair_position_mode_set(self, mode: PositionMode, trading_pair: str) -> Tuple[bool, str]:
+        self.logger().debug("OKX _trading_pair_position_mode_set called")
         msg = ""
         success = True
 
         initial_mode = self.position_mode
         if initial_mode != mode:
+            self.logger().debug("OKX _trading_pair_position_mode_set about to post")
             api_mode = CONSTANTS.POSITION_MODE_MAP[mode]
 
             data = {"posMode": api_mode}
@@ -776,12 +778,13 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
 
             response_code = response["code"]
 
+            self.logger().debug(f"OKX _trading_pair_position_mode_set {response_code=}")
             if response_code != CONSTANTS.RET_CODE_OK:
                 formatted_ret_code = self._format_ret_code_for_print(response_code)
                 msg = f"{formatted_ret_code} - {response['msg']}"
                 success = False
             else:
-                self.position_mode = mode
+                self._perpetual_trading.set_position_mode(mode)
 
         return success, msg
 
