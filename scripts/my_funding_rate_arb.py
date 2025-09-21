@@ -491,4 +491,50 @@ class FundingRateArbitrage(StrategyV2Base):
                 format_df_for_printout(df=pd.DataFrame(active_arbitrage_info), table_format="psql",))
             funding_rate_status.append( \
                 format_df_for_printout(df=pd.DataFrame(active_arbitrage_debug), table_format="psql",))
+
+            funding_rate_status.append(f"\nStopped Funding Arbitrages:")
+            stopped_arbitrage_info = []
+            for token, funding_arbitrage_infos in self.stopped_funding_arbitrages:
+                for funding_arbitrage_info in funding_arbitrage_infos:
+                    arbitrage_info = {'token': token}
+                    connector_1 = funding_arbitrage_info["connector_1"]
+                    connector_2 = funding_arbitrage_info["connector_2"]
+                    arbitrage_info['Connector 1'] = connector_1
+                    arbitrage_info['Connector 2'] = connector_2
+                    executors = self.get_executors(funding_arbitrage_info["executors_ids"])
+                    if len(executors) != 2:
+                        continue
+                    executor_1, executor_2 = executors
+                    a_price_1 = executor_1.custom_info['actual_open_price']
+                    a_price_2 = executor_2.custom_info['actual_open_price']
+                    open_delay_1 = f"{executor_1.custom_info['open_delay']*1e3:.1f}ms" if a_price_1 else "None"
+                    open_delay_2 = f"{executor_2.custom_info['open_delay']*1e3:.1f}ms" if a_price_2 else "None"
+                    open_sllipage_1 = f"{executor_1.custom_info['open_sllipage']:.3%}" if a_price_1 else "None"
+                    open_sllipage_2 = f"{executor_2.custom_info['open_sllipage']:.3%}" if a_price_2 else "None"
+                    arbitrage_info['Open Delay'] = f"{open_delay_1},{open_delay_2}"
+                    arbitrage_info['Open Sllipage'] = f"{open_sllipage_1},{open_sllipage_2}"
+
+                    a_price_1 = executor_1.custom_info['actual_close_price']
+                    a_price_2 = executor_2.custom_info['actual_close_price']
+                    close_delay_1 = f"{executor_1.custom_info['close_delay']*1e3:.1f}ms" if a_price_1 else "None"
+                    close_delay_2 = f"{executor_2.custom_info['close_delay']*1e3:.1f}ms" if a_price_2 else "None"
+                    close_sllipage_1 = f"{executor_1.custom_info['close_sllipage']:.3%}" if a_price_1 else "None"
+                    close_sllipage_2 = f"{executor_2.custom_info['close_sllipage']:.3%}" if a_price_2 else "None"
+                    arbitrage_info['Close Delay'] = f"{close_delay_1},{close_delay_2}"
+                    arbitrage_info['Close Sllipage'] = f"{close_sllipage_1},{close_sllipage_2}"
+
+                    close_type_1 = executor_1.close_type if a_price_1 else "None"
+                    close_type_2 = executor_2.close_type if a_price_2 else "None"
+                    arbitrage_info['Close Type'] = f"{close_type_1},{close_type_2}"
+
+                    funding_payments_pnl = \
+                        sum(funding_payment.amount for funding_payment in funding_arbitrage_info["funding_payments"]) \
+                        / self.config.position_size_quote
+                    executors_pnl = sum(executor.net_pnl_pct for executor in executors)
+                    arbitrage_info['Fund Pnl'] = self.format_percent(funding_payments_pnl)
+                    arbitrage_info['Trade Pnl'] = self.format_percent(executors_pnl)
+
+                    stopped_arbitrage_info.append(arbitrage_info)
+            funding_rate_status.append( \
+                format_df_for_printout(df=pd.DataFrame(stopped_arbitrage_info), table_format="psql",))
         return original_status + "\n".join(funding_rate_status)
