@@ -156,7 +156,7 @@ class ExecutorOrchestrator:
     def __init__(self,
                  strategy: "StrategyV2Base",
                  executors_update_interval: float = 1.0,
-                 executors_max_retries: int = 10,
+                 executors_max_retries: int = 1,
                  initial_positions_by_controller: Optional[dict] = None):
         self.strategy = strategy
         self.executors_update_interval = executors_update_interval

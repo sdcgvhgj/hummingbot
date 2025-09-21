@@ -20,7 +20,7 @@ class PerpetualTrading:
 
     def __init__(self, trading_pairs: List[str]):
         self._account_positions: Dict[str, Position] = {}
-        self._position_mode: PositionMode = PositionMode.ONEWAY
+        self._position_mode: PositionMode = None
         self._leverage: Dict[str, int] = defaultdict(lambda: 1)
         self._trading_pairs = trading_pairs
 

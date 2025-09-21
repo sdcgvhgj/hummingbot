@@ -762,22 +762,26 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
         msg = ""
         success = True
 
-        api_mode = CONSTANTS.POSITION_MODE_MAP[mode]
+        initial_mode = self.position_mode
+        if initial_mode != mode:
+            api_mode = CONSTANTS.POSITION_MODE_MAP[mode]
 
-        data = {"posMode": api_mode}
+            data = {"posMode": api_mode}
 
-        response = await self._api_post(
-            path_url=CONSTANTS.REST_SET_POSITION_MODE[CONSTANTS.ENDPOINT],
-            data=data,
-            is_auth_required=True,
-        )
+            response = await self._api_post(
+                path_url=CONSTANTS.REST_SET_POSITION_MODE[CONSTANTS.ENDPOINT],
+                data=data,
+                is_auth_required=True,
+            )
 
-        response_code = response["code"]
+            response_code = response["code"]
 
-        if response_code != CONSTANTS.RET_CODE_OK:
-            formatted_ret_code = self._format_ret_code_for_print(response_code)
-            msg = f"{formatted_ret_code} - {response['msg']}"
-            success = False
+            if response_code != CONSTANTS.RET_CODE_OK:
+                formatted_ret_code = self._format_ret_code_for_print(response_code)
+                msg = f"{formatted_ret_code} - {response['msg']}"
+                success = False
+            else:
+                self.position_mode = mode
 
         return success, msg
 
