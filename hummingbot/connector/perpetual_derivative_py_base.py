@@ -52,6 +52,7 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
         """
         status_d = super().status_dict
         status_d["funding_info"] = self._perpetual_trading.is_funding_info_initialized()
+        status_d["position_mode"] = self._perpetual_trading.position_mode != None
         return status_d
 
     @property

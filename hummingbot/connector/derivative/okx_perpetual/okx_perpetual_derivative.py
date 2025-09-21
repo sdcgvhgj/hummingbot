@@ -191,7 +191,8 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
     def start(self, clock: Clock, timestamp: float):
         super().start(clock, timestamp)
         if self._domain == CONSTANTS.DEFAULT_DOMAIN and self.is_trading_required:
-            self.set_position_mode(PositionMode.HEDGE)
+            # self.set_position_mode(PositionMode.HEDGE)
+            pass
 
     def _get_fee(self,
                  base_currency: str,
@@ -258,8 +259,10 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
                 data["posSide"] = "long" if trade_type is TradeType.BUY else "short"
             else:
                 data["posSide"] = "short" if trade_type is TradeType.BUY else "long"
-        else:
+        elif self.position_mode == PositionMode.ONEWAY:
             data["posSide"] = "net"
+        else:
+            raise Exception(f"Position mode not set when placing order")
 
         exchange_order_id = await self._api_post(
             path_url=CONSTANTS.REST_PLACE_ACTIVE_ORDER[CONSTANTS.ENDPOINT],
@@ -705,11 +708,13 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
         fill_fee_currency = order_msg.get("fillFeeCcy")
         fill_fee = -Decimal(order_msg.get("fillFee", "0"))
 
+        fill_time = order_msg.get('fillTime', None)
+
         updatable_order = self._order_tracker.all_updatable_orders.get(client_order_id)
         if updatable_order is not None:
             new_order_update: OrderUpdate = OrderUpdate(
                 trading_pair=updatable_order.trading_pair,
-                update_timestamp=self.current_timestamp,
+                update_timestamp=float(fill_time)*1e-3 if fill_time else self.current_timestamp,
                 new_state=order_status,
                 client_order_id=client_order_id,
                 exchange_order_id=order_msg["ordId"],
@@ -759,13 +764,13 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
         self._set_trading_pair_symbol_map(mapping)
 
     async def _trading_pair_position_mode_set(self, mode: PositionMode, trading_pair: str) -> Tuple[bool, str]:
-        self.logger().debug("OKX _trading_pair_position_mode_set called")
+        self.logger().debug(f"OKX _trading_pair_position_mode_set called ({mode.value})")
         msg = ""
         success = True
 
         initial_mode = self.position_mode
         if initial_mode != mode:
-            self.logger().debug("OKX _trading_pair_position_mode_set about to post")
+            self.logger().debug(f"OKX _trading_pair_position_mode_set about to post ({mode.value})")
             api_mode = CONSTANTS.POSITION_MODE_MAP[mode]
 
             data = {"posMode": api_mode}
@@ -778,7 +783,7 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
 
             response_code = response["code"]
 
-            self.logger().debug(f"OKX _trading_pair_position_mode_set {response_code=}")
+            self.logger().debug(f"OKX _trading_pair_position_mode_set {response_code=} ({mode.value})")
             if response_code != CONSTANTS.RET_CODE_OK:
                 formatted_ret_code = self._format_ret_code_for_print(response_code)
                 msg = f"{formatted_ret_code} - {response['msg']}"
