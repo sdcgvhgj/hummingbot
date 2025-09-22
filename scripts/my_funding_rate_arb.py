@@ -523,8 +523,8 @@ class FundingRateArbitrage(StrategyV2Base):
                     arbitrage_info['Close Delay'] = f"{close_delay_1},{close_delay_2}"
                     arbitrage_info['Close Sllipage'] = f"{close_sllipage_1},{close_sllipage_2}"
 
-                    close_type_1 = executor_1.close_type if a_price_1 else "None"
-                    close_type_2 = executor_2.close_type if a_price_2 else "None"
+                    close_type_1 = executor_1.close_type.name if a_price_1 else "None"
+                    close_type_2 = executor_2.close_type.name if a_price_2 else "None"
                     arbitrage_info['Close Type'] = f"{close_type_1},{close_type_2}"
 
                     funding_payments_pnl = \

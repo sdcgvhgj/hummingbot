@@ -22,6 +22,7 @@ from hummingbot.strategy_v2.executors.executor_base import ExecutorBase
 from hummingbot.strategy_v2.executors.position_executor.data_types import PositionExecutorConfig
 from hummingbot.strategy_v2.models.base import RunnableStatus
 from hummingbot.strategy_v2.models.executors import CloseType, TrackedOrder
+from hummingbot.core.utils.async_utils import safe_ensure_future
 
 
 class PositionExecutor(ExecutorBase):
@@ -636,6 +637,7 @@ class PositionExecutor(ExecutorBase):
         self.executor_earlystop_timestamp = time.time()
         self.close_type = CloseType.POSITION_HOLD if keep_position else CloseType.EARLY_STOP
         self._status = RunnableStatus.SHUTTING_DOWN
+        safe_ensure_future(self.control_shutdown_process())
     
     def get_open_delay(self):
         if self.executor_create_timestamp and self.open_order_complete_timestamp:
@@ -660,7 +662,7 @@ class PositionExecutor(ExecutorBase):
     def on_stop(self):
         if self.close_type == CloseType.EARLY_STOP:
             self.logger().info(f"Stopping position-executor, "
-                            f"close-type={self.close_type.value}, "
+                            f"close-type={self.close_type.name}, "
                             f"open-delay={self.get_open_delay():.4f}s, "
                             f"open-slippage={self.get_open_slippage():.4%}, "
                             f"close-delay={self.get_close_delay():.4f}s, "
