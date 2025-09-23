@@ -299,6 +299,8 @@ class FundingRateArbitrage(StrategyV2Base):
                                       f"{','.join([close.name for close in closed_ex])}, stopping executors")
                 self.token_failure_cool_down[token] = COOL_DOWN_COUNT
                 stopped_tokens.append(token)
+                funding_arbitrage_info['stop_reason'] = "UNK"
+                self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
                 stop_executor_actions.extend(self.create_stop_executor_action(executors))
                 continue
             if len(executors) != 2:
@@ -336,11 +338,13 @@ class FundingRateArbitrage(StrategyV2Base):
                                    f"{executors_pnl_by_hand=:.4%}, "
                                    f"{funding_payments_pnl_pct=:.4%}")
                 stopped_tokens.append(token)
+                funding_arbitrage_info['stop_reason'] = "TP"
                 self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
                 stop_executor_actions.extend(self.create_stop_executor_action(executors, c_price_1, c_price_2))
             elif stop_loss_condition:
                 self.logger().info(f"Stop loss condition satisfied for {token}, stopping executors")
                 stopped_tokens.append(token)
+                funding_arbitrage_info['stop_reason'] = "SL"
                 self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
                 stop_executor_actions.extend(self.create_stop_executor_action(executors, c_price_1, c_price_2))
         for token in stopped_tokens:
@@ -533,6 +537,7 @@ class FundingRateArbitrage(StrategyV2Base):
                     executors_pnl = sum(executor.net_pnl_pct for executor in executors)
                     arbitrage_info['Fund Pnl'] = self.format_percent(funding_payments_pnl)
                     arbitrage_info['Trade Pnl'] = self.format_percent(executors_pnl)
+                    arbitrage_info['TS'] = funding_arbitrage_info['stop_reason']
 
                     stopped_arbitrage_info.append(arbitrage_info)
             funding_rate_status.append( \
