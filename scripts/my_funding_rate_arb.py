@@ -539,10 +539,14 @@ class FundingRateArbitrage(StrategyV2Base):
 
                     a_price_1 = executor_1.custom_info['actual_close_price']
                     a_price_2 = executor_2.custom_info['actual_close_price']
-                    close_delay_1 = f"{executor_1.custom_info['close_delay']*1e3:.1f}ms" if a_price_1 else "None"
-                    close_delay_2 = f"{executor_2.custom_info['close_delay']*1e3:.1f}ms" if a_price_2 else "None"
-                    close_sllipage_1 = f"{executor_1.custom_info['close_sllipage']:.3%}" if a_price_1 else "None"
-                    close_sllipage_2 = f"{executor_2.custom_info['close_sllipage']:.3%}" if a_price_2 else "None"
+                    e_price_1 = executor_1.custom_info['expect_close_price']
+                    e_price_2 = executor_2.custom_info['expect_close_price']
+                    normal_closed_1 = e_price_1 and a_price_1
+                    normal_closed_2 = e_price_2 and a_price_2
+                    close_delay_1 = f"{executor_1.custom_info['close_delay']*1e3:.1f}ms" if normal_closed_1 else "None"
+                    close_delay_2 = f"{executor_2.custom_info['close_delay']*1e3:.1f}ms" if normal_closed_2 else "None"
+                    close_sllipage_1 = f"{executor_1.custom_info['close_sllipage']:.3%}" if normal_closed_1 else "None"
+                    close_sllipage_2 = f"{executor_2.custom_info['close_sllipage']:.3%}" if normal_closed_2 else "None"
                     arbitrage_info['Close Delay'] = f"{close_delay_1},{close_delay_2}"
                     arbitrage_info['Close Sllipage'] = f"{close_sllipage_1},{close_sllipage_2}"
 
