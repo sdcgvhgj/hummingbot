@@ -35,6 +35,12 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Enter the min trade profitability to enter in a position (e.g. 0.001): ",
             "prompt_on_new": True}
     )
+    min_funding_profitability: Decimal = Field(
+        default=0.001,
+        json_schema_extra={
+            "prompt": lambda mi: "Enter the min funding rate profitability to enter in a position (e.g. 0.001): ",
+            "prompt_on_new": True}
+    )
     min_take_profit: Decimal = Field(
         default=0.001,
         json_schema_extra={
@@ -236,7 +242,8 @@ class FundingRateArbitrage(StrategyV2Base):
                     continue
                 connector_1, connector_2, trade_side, expected_profitability, \
                         rate_1, rate_2, price_1, price_2, fee_1, fee_2 = best_combination
-                if expected_profitability >= self.config.min_trade_profitability:
+                if expected_profitability >= self.config.min_trade_profitability \
+                    and rate_2 - rate_1 >= self.config.min_funding_profitability:
                     enough_1, balance_1 = self.enough_balance(connector_1)
                     enough_2, balance_2 = self.enough_balance(connector_2)
                     if not enough_1 or not enough_2:
@@ -320,10 +327,12 @@ class FundingRateArbitrage(StrategyV2Base):
             if not a_price_1 or not a_price_2:
                 self.logger().debug(f"Skip stop actions judgement {token} because open-order didn't filled")
                 continue
+            connector_1 = funding_arbitrage_info["connector_1"]
+            connector_2 = funding_arbitrage_info["connector_2"]
             c_price_1, _ = self.get_price_and_fee_with_cache( \
-                {}, funding_arbitrage_info["connector_1"], token, TradeType.SELL)
+                {}, connector_1, token, TradeType.SELL)
             c_price_2, _ = self.get_price_and_fee_with_cache( \
-                {}, funding_arbitrage_info["connector_2"], token, TradeType.BUY)
+                {}, connector_2, token, TradeType.BUY)
             executors_pnl = sum(executor.net_pnl_pct for executor in executors)
             price_1 = funding_arbitrage_info['price_1']
             executors_pnl_by_hand = (a_price_2 - a_price_1 - c_price_2 + c_price_1) / price_1 - fee_1 - fee_2
@@ -338,7 +347,11 @@ class FundingRateArbitrage(StrategyV2Base):
             take_profit_condition = executors_pnl_by_hand + funding_payments_pnl_pct > \
                                     self.config.min_take_profit + fee_1 + fee_2
             # TODO strengthen stop_loss_condition
-            stop_loss_condition = len(funding_arbitrage_info["funding_payments"]) > 1
+            funding_info_report = self.get_funding_info_by_token(token)
+            rate_1 = funding_info_report[connector_1].rate
+            rate_2 = funding_info_report[connector_2].rate
+            stop_loss_condition = len(funding_arbitrage_info["funding_payments"]) > 1 \
+                                and rate_2 - rate_1 < self.config.min_funding_profitability
             if take_profit_condition:
                 self.logger().info(f"Take profit profitability reached for {token}, stopping executors, "
                                    f"{executors_pnl_by_hand=:.4%}, "
