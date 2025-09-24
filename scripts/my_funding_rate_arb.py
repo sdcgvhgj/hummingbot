@@ -35,6 +35,12 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Enter the min trade profitability to enter in a position (e.g. 0.001): ",
             "prompt_on_new": True}
     )
+    min_take_profit: Decimal = Field(
+        default=0.001,
+        json_schema_extra={
+            "prompt": lambda mi: "Enter the min take profit threshold to close positions (e.g. 0.001): ",
+            "prompt_on_new": True}
+    )
     connectors: Set[str] = Field(
         default="hyperliquid_perpetual,binance_perpetual",
         json_schema_extra={
@@ -330,7 +336,7 @@ class FundingRateArbitrage(StrategyV2Base):
             self.logger().debug(f"{executor_1.custom_info['entry_price']=:.7f},{executor_2.custom_info['entry_price']=:.7f}")
             self.logger().debug(f"{executor_1.custom_info['close_price']=:.7f},{executor_2.custom_info['close_price']=:.7f}")
             take_profit_condition = executors_pnl_by_hand + funding_payments_pnl_pct > \
-                                    self.config.min_trade_profitability + fee_1 + fee_2
+                                    self.config.min_take_profit + fee_1 + fee_2
             # TODO strengthen stop_loss_condition
             stop_loss_condition = len(funding_arbitrage_info["funding_payments"]) > 1
             if take_profit_condition:
