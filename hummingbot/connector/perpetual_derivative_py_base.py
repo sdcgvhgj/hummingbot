@@ -9,7 +9,7 @@ from hummingbot.connector.derivative.position import Position
 from hummingbot.connector.exchange_py_base import ExchangePyBase
 from hummingbot.connector.perpetual_trading import PerpetualTrading
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
-from hummingbot.core.data_type.funding_info import FundingInfo
+from hummingbot.core.data_type.funding_info import FundingInfo, FundingInfoUpdate
 from hummingbot.core.data_type.in_flight_order import PerpetualDerivativeInFlightOrder
 from hummingbot.core.data_type.perpetual_api_order_book_data_source import PerpetualAPIOrderBookDataSource
 from hummingbot.core.data_type.trade_fee import TradeFeeBase
@@ -363,9 +363,24 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
 
     async def _listen_for_funding_info(self):
         await self._init_funding_info()
-        await self._orderbook_ds.listen_for_funding_info(
-            output=self._perpetual_trading.funding_info_stream
-        )
+        while True:
+            await asyncio.sleep(60.0 * 5)
+            await self._update_funding_info()
+        # await self._orderbook_ds.listen_for_funding_info(
+        #     output=self._perpetual_trading.funding_info_stream
+        # )
+
+    async def _update_funding_info(self):
+        for trading_pair in self.trading_pairs:
+            new_funding_info = await self._orderbook_ds.get_funding_info(trading_pair)
+            funding_info = self._perpetual_trading._funding_info[trading_pair]
+            funding_info.update(FundingInfoUpdate(
+                trading_pair=trading_pair,
+                index_price=new_funding_info.index_price,
+                mark_price=new_funding_info.mark_price,
+                next_funding_utc_timestamp=new_funding_info.next_funding_utc_timestamp,
+                rate=new_funding_info.rate,
+            ))
 
     async def _init_funding_info(self):
         for trading_pair in self.trading_pairs:
@@ -388,6 +403,7 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
         try:
             tasks = []
             for trading_pair in self.trading_pairs:
+                # TODO: potential rate limit
                 tasks.append(
                     asyncio.create_task(
                         self._update_funding_payment(trading_pair=trading_pair, fire_event_on_new=fire_event_on_new)
