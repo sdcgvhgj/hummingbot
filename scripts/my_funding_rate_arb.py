@@ -344,12 +344,13 @@ class FundingRateArbitrage(StrategyV2Base):
             executor_1, executor_2 = executors
             self.logger().debug(f"{executor_1.custom_info['entry_price']=:.7f},{executor_2.custom_info['entry_price']=:.7f}")
             self.logger().debug(f"{executor_1.custom_info['close_price']=:.7f},{executor_2.custom_info['close_price']=:.7f}")
-            take_profit_condition = executors_pnl_by_hand + funding_payments_pnl_pct > \
-                                    self.config.min_take_profit + fee_1 + fee_2
-            # TODO strengthen stop_loss_condition
             funding_info_report = self.get_funding_info_by_token(token)
             rate_1 = funding_info_report[connector_1].rate
             rate_2 = funding_info_report[connector_2].rate
+            take_profit_condition = executors_pnl_by_hand + funding_payments_pnl_pct > \
+                                    self.config.min_take_profit + fee_1 + fee_2
+            take_profit_condition = take_profit_condition and rate_2 - rate_1 < trade_pnl_by_had
+            # TODO strengthen stop_loss_condition
             stop_loss_condition = len(funding_arbitrage_info["funding_payments"]) > 1 \
                                 and rate_2 - rate_1 < self.config.min_funding_profitability
             if take_profit_condition:
