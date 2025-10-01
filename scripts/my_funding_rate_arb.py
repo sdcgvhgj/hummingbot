@@ -18,7 +18,7 @@ from hummingbot.strategy_v2.executors.position_executor.data_types import Positi
 from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, StopExecutorAction
 from hummingbot.strategy_v2.models.executors_info import ExecutorInfo
 
-COOL_DOWN_COUNT = 60 * 60
+COOL_DOWN_COUNT = 60 * 60 * 24
 
 class FundingRateArbitrageConfig(StrategyV2ConfigBase):
     script_file_name: str = os.path.basename(__file__)
@@ -187,6 +187,9 @@ class FundingRateArbitrage(StrategyV2Base):
             time_to_funding = funding_info_report[connector].next_funding_utc_timestamp - self.current_timestamp
             if time_to_funding / 60 < self.config.max_time_to_next_funding:
                 valid_connectors.append(connector)
+
+        # TODO: computation delay mesure
+
         # Find best combination
         best_combination = None
         highest_profitability = Decimal(-100)
@@ -349,7 +352,10 @@ class FundingRateArbitrage(StrategyV2Base):
             rate_2 = funding_info_report[connector_2].rate
             take_profit_condition = executors_pnl_by_hand + funding_payments_pnl_pct > \
                                     self.config.min_take_profit + fee_1 + fee_2
-            take_profit_condition = take_profit_condition and rate_2 - rate_1 < trade_pnl_by_had
+            keep_holding_condition = rate_2 - rate_1 > trade_pnl_by_had and rate_2 - rate_1 > 0
+            if take_profit_condition and keep_holding_condition:
+                self.logger().info("tp reached but holding")
+            take_profit_condition = take_profit_condition and not keep_holding_condition
             # TODO strengthen stop_loss_condition
             stop_loss_condition = len(funding_arbitrage_info["funding_payments"]) > 1 \
                                 and rate_2 - rate_1 < self.config.min_funding_profitability

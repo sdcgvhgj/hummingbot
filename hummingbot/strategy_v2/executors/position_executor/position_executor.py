@@ -661,12 +661,12 @@ class PositionExecutor(ExecutorBase):
     
     def on_stop(self):
         if self.close_type == CloseType.EARLY_STOP:
+            open_delay = f"open-delay={self.get_open_delay():.4f}s, " if self.get_open_delay() else "None, "
+            open_slippage = f"open-slippage={self.get_open_slippage():.4%}, " if self.get_open_slippage() else "None, "
+            close_delay = f"close-delay={self.get_close_delay():.4f}s, " if self.get_close_delay() else "None, "
+            close_slippage = f"close-slippage={self.get_close_slippage():.4%}, " if self.get_close_slippage() else "None,"
             self.logger().info(f"Stopping position-executor, "
-                            f"close-type={self.close_type.name}, "
-                            f"open-delay={self.get_open_delay():.4f}s, "
-                            f"open-slippage={self.get_open_slippage():.4%}, "
-                            f"close-delay={self.get_close_delay():.4f}s, "
-                            f"close-slippage={self.get_close_slippage():.4%}, "
+                            f"close-type={self.close_type.name}, " + open_delay +  open_slippage + close_delay + close_slippage + \
                             f"trade-pnl-pct={self.trade_pnl_pct:.4%}")
 
     def update_tracked_orders_with_order_id(self, order_id: str):
