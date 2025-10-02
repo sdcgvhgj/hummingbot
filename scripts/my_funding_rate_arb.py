@@ -353,8 +353,9 @@ class FundingRateArbitrage(StrategyV2Base):
             take_profit_condition = executors_pnl_by_hand + funding_payments_pnl_pct > \
                                     self.config.min_take_profit + fee_1 + fee_2
             keep_holding_condition = rate_2 - rate_1 > trade_pnl_by_had and rate_2 - rate_1 > 0
+            keep_holding_condition = keep_holding_condition or (self.config.min_funding_profitability > 0 and len(funding_arbitrage_info["funding_payments"]) < 2)
             if take_profit_condition and keep_holding_condition:
-                self.logger().info("tp reached but holding")
+                self.logger().info("TP reached but holding")
             take_profit_condition = take_profit_condition and not keep_holding_condition
             # TODO strengthen stop_loss_condition
             stop_loss_condition = len(funding_arbitrage_info["funding_payments"]) > 1 \
@@ -383,7 +384,10 @@ class FundingRateArbitrage(StrategyV2Base):
         to the list.
         """
         token = funding_payment_completed_event.trading_pair.split("-")[0]
+        market = funding_payment_completed_event.market
+        amount = funding_payment_completed_event.amount
         if token in self.active_funding_arbitrages:
+            self.logger().info(f"Funding payment collected for {token} by {market}, amount = {float(amount):.3f} USD")
             self.active_funding_arbitrages[token]["funding_payments"].append(funding_payment_completed_event)
 
     def get_position_executors_config(self, token, connector_1, connector_2, trade_side, price_1, price_2):
