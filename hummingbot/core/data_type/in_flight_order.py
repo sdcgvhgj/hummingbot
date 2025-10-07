@@ -275,7 +275,6 @@ class InFlightOrder:
             "creation_timestamp": self.creation_timestamp,
             "last_update_timestamp": self.last_update_timestamp,
             "order_fills": {key: fill.to_json() for key, fill in self.order_fills.items()},
-            "cumulative_fee_paid_base": float(self.cumulative_fee_paid(self.base_asset)),
             "cumulative_fee_paid_quote": float(self.cumulative_fee_paid(self.quote_asset)),
         }
 
