@@ -256,10 +256,11 @@ class FundingRateArbitrage(StrategyV2Base):
                         continue
                     self.logger().info(f"Best Combination: {token} | {connector_1} | {connector_2} | {trade_side} | "
                                        f"rate_1={self.format_percent(rate_1)} | rate_2={self.format_percent(rate_2)} | "
-                                       f"price_1={price_1:.7f} | price_2={price_2:.7f} |"
+                                       f"price_1={price_1:.7f} | price_2={price_2:.7f} | "
                                        f"fee_1={self.format_percent(fee_1)} | fee_2={self.format_percent(fee_2)} | "
-                                       f"expected_profitability={self.format_percent(expected_profitability)} "
-                                       f"Starting executors...")
+                                       f"balance_1={balance_1:.3f} | balance_2={balance_2:.3f} | "
+                                       f"expected_profitability={self.format_percent(expected_profitability)} ")
+                    self.logger().info(f"Starting executors...")
                     position_executor_config_1, position_executor_config_2 = \
                         self.get_position_executors_config(token, connector_1, connector_2, trade_side, price_1, price_2)
                     self.active_funding_arbitrages[token] = {
