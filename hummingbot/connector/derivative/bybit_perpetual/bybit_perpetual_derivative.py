@@ -532,7 +532,7 @@ class BybitPerpetualDerivative(PerpetualDerivativePyBase):
 
             order_update: OrderUpdate = OrderUpdate(
                 trading_pair=tracked_order.trading_pair,
-                update_timestamp=self.current_timestamp,
+                update_timestamp=float(order_msg["updatedTime"])*1e-3,
                 new_state=CONSTANTS.ORDER_STATE[order_msg["orderStatus"]],
                 client_order_id=client_order_id,
                 exchange_order_id=order_msg["orderId"],
@@ -690,7 +690,7 @@ class BybitPerpetualDerivative(PerpetualDerivativePyBase):
         if updatable_order is not None:
             new_order_update: OrderUpdate = OrderUpdate(
                 trading_pair=updatable_order.trading_pair,
-                update_timestamp=self.current_timestamp,
+                update_timestamp=float(order_msg["updatedTime"])*1e-3,
                 new_state=order_status,
                 client_order_id=client_order_id,
                 exchange_order_id=order_msg["orderId"],
