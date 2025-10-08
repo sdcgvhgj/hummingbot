@@ -243,6 +243,7 @@ class OrderBookTracker:
             try:
                 ob_message: OrderBookMessage = await self._order_book_snapshot_stream.get()
                 trading_pair: str = ob_message.trading_pair
+                self.logger().debug(f"Recived orderbook snapshot for {trading_pair} by {self._domain}")
                 if trading_pair not in self._tracking_message_queues:
                     continue
                 message_queue: asyncio.Queue = self._tracking_message_queues[trading_pair]
@@ -283,8 +284,13 @@ class OrderBookTracker:
                         diff_messages_accepted = 0
                     last_message_timestamp = now
                 elif message.type is OrderBookMessageType.SNAPSHOT:
+                    debug_log = f"Processing orderbook snapshot for {trading_pair}, " + \
+                                f"domain={self._domain}, " + \
+                                f"before-price=({order_book.get_price(False):.5f},{order_book.get_price(True):.5f}), "
                     past_diffs: List[OrderBookMessage] = list(past_diffs_window)
                     order_book.restore_from_snapshot_and_diffs(message, past_diffs)
+                    debug_log += f"after-price=({order_book.get_price(False):.5f},{order_book.get_price(True):.5f})"
+                    self.logger().debug(debug_log)
             except asyncio.CancelledError:
                 raise
             except Exception:

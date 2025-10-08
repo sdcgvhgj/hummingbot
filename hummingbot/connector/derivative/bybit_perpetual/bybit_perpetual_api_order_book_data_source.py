@@ -247,6 +247,7 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             message_queue.put_nowait(info_update)
 
     async def _order_book_snapshot(self, trading_pair: str) -> OrderBookMessage:
+        self.logger().debug("BybitPerp requesting order_book_snapshot for " + trading_pair)
         snapshot_response = await self._request_order_book_snapshot(trading_pair)
         snapshot_data = snapshot_response["result"]
         timestamp = float(snapshot_data["ts"])

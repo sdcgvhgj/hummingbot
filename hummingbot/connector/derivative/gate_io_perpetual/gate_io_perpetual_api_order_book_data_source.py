@@ -55,6 +55,7 @@ class GateIoPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         return funding_info
 
     async def _order_book_snapshot(self, trading_pair: str) -> OrderBookMessage:
+        self.logger().debug("GateIoPerp requesting order_book_snapshot for " + trading_pair)
         snapshot_response: Dict[str, Any] = await self._request_order_book_snapshot(trading_pair)
         snapshot_timestamp: float = self._time()
         snapshot_msg: OrderBookMessage = OrderBookMessage(

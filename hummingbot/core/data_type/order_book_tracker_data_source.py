@@ -13,6 +13,7 @@ from hummingbot.logger import HummingbotLogger
 
 class OrderBookTrackerDataSource(metaclass=ABCMeta):
     FULL_ORDER_BOOK_RESET_DELTA_SECONDS = 60 * 60
+    FULL_ORDER_BOOK_RESET_DELTA_SECONDS = 1 * 60 # for debug
 
     _logger: Optional[HummingbotLogger] = None
 
@@ -125,8 +126,10 @@ class OrderBookTrackerDataSource(metaclass=ABCMeta):
                 try:
                     snapshot_event = await asyncio.wait_for(message_queue.get(),
                                                             timeout=self.FULL_ORDER_BOOK_RESET_DELTA_SECONDS)
+                    self.logger().debug("order-book-snapshots loop, get snapshot_event")
                     await self._parse_order_book_snapshot_message(raw_message=snapshot_event, message_queue=output)
                 except asyncio.TimeoutError:
+                    self.logger().debug("order-book-snapshots loop timeout, request orderbook snapshots")
                     await self._request_order_book_snapshots(output=output)
             except asyncio.CancelledError:
                 raise
