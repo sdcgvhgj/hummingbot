@@ -321,18 +321,18 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         for bid in bids_list:
             bid_price = float(bid[0])
             bid_size = float(bid[1])
-            if bid_size == 0:
-                # Size of 0 means delete the entry
-                continue
+            # if bid_size == 0:
+            #     # Size of 0 means delete the entry
+            #     continue
             bids.append((bid_price, bid_size))
 
         # Process asks
         for ask in asks_list:
             ask_price = float(ask[0])
             ask_size = float(ask[1])
-            if ask_size == 0:
-                # Size of 0 means delete the entry
-                continue
+            # if ask_size == 0:
+            #     # Size of 0 means delete the entry
+            #     continue
             asks.append((ask_price, ask_size))
 
         return bids, asks
