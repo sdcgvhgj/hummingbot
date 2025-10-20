@@ -103,6 +103,7 @@ class OrderBookTrackerDataSource(metaclass=ABCMeta):
         while True:
             try:
                 diff_event = await message_queue.get()
+                self.logger().debug(f"order-book-diffs loop, get diff message")
                 await self._parse_order_book_diff_message(raw_message=diff_event, message_queue=output)
 
             except asyncio.CancelledError:
@@ -131,6 +132,7 @@ class OrderBookTrackerDataSource(metaclass=ABCMeta):
                 except asyncio.TimeoutError:
                     self.logger().debug("order-book-snapshots loop timeout, request orderbook snapshots")
                     await self._request_order_book_snapshots(output=output)
+                    self.logger().debug("order-book-snapshots loop, request orderbook snapshots done")
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -160,6 +162,7 @@ class OrderBookTrackerDataSource(metaclass=ABCMeta):
             try:
                 snapshot = await self._order_book_snapshot(trading_pair=trading_pair)
                 output.put_nowait(snapshot)
+                self.logger().debug(f"order-book-snapshots loop, put snapshot for {trading_pair}")
             except Exception:
                 self.logger().exception(f"Unexpected error fetching order book snapshot for {trading_pair}.")
                 raise

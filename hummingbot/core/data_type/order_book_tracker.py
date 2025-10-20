@@ -198,6 +198,7 @@ class OrderBookTracker:
             try:
                 ob_message: OrderBookMessage = await self._order_book_diff_stream.get()
                 trading_pair: str = ob_message.trading_pair
+                self.logger().debug(f"order-book-diff-router, get diff for {trading_pair}")
 
                 if trading_pair not in self._tracking_message_queues:
                     messages_queued += 1

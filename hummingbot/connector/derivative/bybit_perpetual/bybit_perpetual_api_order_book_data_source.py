@@ -186,6 +186,9 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
                     channel = self._diff_messages_queue_key
             elif event_channel == CONSTANTS.WS_INSTRUMENTS_INFO_TOPIC:
                 channel = self._funding_info_messages_queue_key
+            else:
+                self.logger().debug(f"Unknown event channel: {event_channel}")
+        self.logger().debug(f"Channel originating message: {channel}")
         return channel
 
     async def _parse_order_book_diff_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
