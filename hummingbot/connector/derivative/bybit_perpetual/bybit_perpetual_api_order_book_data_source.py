@@ -179,7 +179,11 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             if event_channel == CONSTANTS.WS_TRADES_TOPIC:
                 channel = self._trade_messages_queue_key
             elif event_channel == CONSTANTS.WS_ORDER_BOOK_EVENTS_TOPIC:
-                channel = self._diff_messages_queue_key
+                # Route WS orderbook snapshot vs delta to different queues
+                if event_message.get("type") == "snapshot":
+                    channel = self._snapshot_messages_queue_key
+                else:
+                    channel = self._diff_messages_queue_key
             elif event_channel == CONSTANTS.WS_INSTRUMENTS_INFO_TOPIC:
                 channel = self._funding_info_messages_queue_key
         return channel
@@ -191,8 +195,9 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             symbol = raw_message["topic"].split(".")[-1]
             trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(symbol)
             timestamp_seconds = int(raw_message["ts"]) / 1e3
-            update_id = self._nonce_provider.get_tracking_nonce(timestamp=timestamp_seconds)
             diffs_data = raw_message["data"]
+            # Use Bybit engine update id 'u' as the canonical update_id for ordering
+            update_id = int(diffs_data.get("u")) if isinstance(diffs_data, dict) and "u" in diffs_data else self._nonce_provider.get_tracking_nonce(timestamp=timestamp_seconds)
             bids, asks = self._get_bids_and_asks_from_ws_msg_data(diffs_data)
             order_book_message_content = {
                 "trading_pair": trading_pair,
@@ -206,6 +211,28 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
                 timestamp=timestamp_seconds,
             )
             message_queue.put_nowait(diff_message)
+
+    async def _parse_order_book_snapshot_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
+        event_type = raw_message.get("type")
+        if event_type == "snapshot":
+            symbol = raw_message["topic"].split(".")[-1]
+            trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(symbol)
+            timestamp_seconds = int(raw_message.get("ts", 0)) / 1e3
+            snapshot_data = raw_message["data"]
+            update_id = int(snapshot_data.get("u", 0))
+            bids, asks = self._get_bids_and_asks_from_ws_msg_data(snapshot_data)
+            order_book_message_content = {
+                "trading_pair": trading_pair,
+                "update_id": update_id,
+                "bids": bids,
+                "asks": asks,
+            }
+            snapshot_msg: OrderBookMessage = OrderBookMessage(
+                message_type=OrderBookMessageType.SNAPSHOT,
+                content=order_book_message_content,
+                timestamp=timestamp_seconds,
+            )
+            message_queue.put_nowait(snapshot_msg)
 
     async def _parse_trade_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
         trade_updates = raw_message["data"]
@@ -252,7 +279,8 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         snapshot_data = snapshot_response["result"]
         # Bybit returns ts in milliseconds, convert to seconds to align with internal timebase
         timestamp_seconds = int(snapshot_data["ts"]) / 1e3
-        update_id = self._nonce_provider.get_tracking_nonce(timestamp=timestamp_seconds)
+        # Use engine update id 'u' from snapshot for correct ordering
+        update_id = int(snapshot_data.get("u", 0))
 
         bids, asks = self._get_bids_and_asks_from_rest_msg_data(snapshot_data)
         order_book_message_content = {
