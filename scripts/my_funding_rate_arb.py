@@ -70,6 +70,25 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Enter x such that only open when next funding is within x minutes (e.g. 240): ",
             "prompt_on_new": True}
     )
+    # Dynamic Top-K scanning controls
+    dynamic_topk_enabled: bool = Field(
+        default=False,
+        json_schema_extra={
+            "prompt": lambda mi: "Enable dynamic Top-K token scanning via REST? (true/false): ",
+            "prompt_on_new": True}
+    )
+    topk: int = Field(
+        default=10,
+        json_schema_extra={
+            "prompt": lambda mi: "How many tokens to keep subscribed via WS (K): ",
+            "prompt_on_new": True}
+    )
+    scan_interval_hours: int = Field(
+        default=12,
+        json_schema_extra={
+            "prompt": lambda mi: "Scan interval in hours (e.g. 12): ",
+            "prompt_on_new": True}
+    )
 
     @field_validator("connectors", "tokens", mode="before")
     @classmethod
@@ -113,6 +132,7 @@ class FundingRateArbitrage(StrategyV2Base):
         self.stopped_funding_arbitrages = {token: [] for token in self.config.tokens}
         self.tokens_supported_exchange_map = dict()
         self.token_failure_cool_down = {token: 0 for token in self.config.tokens}
+        self._dynamic_scan_task = None
 
     def start(self, clock: Clock, timestamp: float) -> None:
         """
@@ -122,6 +142,15 @@ class FundingRateArbitrage(StrategyV2Base):
         """
         self._last_timestamp = timestamp
         self.apply_initial_setting()
+        # Kick off dynamic scanner if enabled
+        if getattr(self.config, "dynamic_topk_enabled", False):
+            try:
+                import asyncio
+                if self._dynamic_scan_task is None or self._dynamic_scan_task.done():
+                    self.logger().info("[dynamic-topk] Starting background scanner loop...")
+                    self._dynamic_scan_task = asyncio.create_task(self._dynamic_scan_loop())
+            except Exception as e:
+                self.logger().error(f"[dynamic-topk] Failed to start scanner: {e}")
 
     def token_supported_exchange(self, token: str):
         if token in self.tokens_supported_exchange_map:
@@ -145,6 +174,37 @@ class FundingRateArbitrage(StrategyV2Base):
                 connector.set_position_mode(self.position_mode_map.get(connector_name, PositionMode.HEDGE))
                 for trading_pair in self.market_data_provider.get_trading_pairs(connector_name):
                     connector.set_leverage(trading_pair, self.config.leverage)
+
+    async def _dynamic_scan_loop(self):
+        """
+        Background loop to periodically scan all symbols via REST, select Top-K by expected profitability,
+        and refresh WS subscriptions by rebuilding connectors through TradingCore.
+        This initial implementation only logs scheduling and placeholders; REST scan logic is added in a later commit.
+        """
+        import asyncio
+        from datetime import datetime, timedelta
+        self.logger().info(f"[dynamic-topk] Scanner loop initialized: every {self.config.scan_interval_hours}h on the hour.")
+        # Align to next full hour
+        while True:
+            try:
+                now = datetime.utcnow()
+                next_hour = (now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
+                sleep_secs = (next_hour - now).total_seconds()
+                await asyncio.sleep(sleep_secs)
+
+                # Check if this hour matches the interval boundary
+                hour = next_hour.hour
+                if hour % int(self.config.scan_interval_hours) != 0:
+                    self.logger().debug(f"[dynamic-topk] Skipping hour {hour}, not interval boundary.")
+                    continue
+
+                self.logger().info("[dynamic-topk] Triggering REST scan (placeholder)")
+                # Placeholder: REST scan + Top-K selection will be implemented in next commit
+            except asyncio.CancelledError:
+                self.logger().info("[dynamic-topk] Scanner task cancelled.")
+                break
+            except Exception as e:
+                self.logger().error(f"[dynamic-topk] Scanner loop error: {e}")
 
     def get_funding_info_by_token(self, token):
         """

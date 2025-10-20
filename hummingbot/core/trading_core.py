@@ -46,6 +46,9 @@ class StrategyType(Enum):
 
 s_logger = None
 
+# Global reference to the current TradingCore instance for scripts/features that need engine-level ops
+_CURRENT_TRADING_CORE = None
+
 
 class TradingCore:
     """
@@ -120,6 +123,15 @@ class TradingCore:
         # Backward compatibility properties
         self.market_trading_pairs_map: Dict[str, List[str]] = {}
         self.market_trading_pair_tuples: List[MarketTradingPairTuple] = []
+
+        # Expose global reference (intentionally singleton-like for this customized setup)
+        global _CURRENT_TRADING_CORE
+        _CURRENT_TRADING_CORE = self
+
+    @staticmethod
+    def get_instance() -> "TradingCore":
+        """Return the current TradingCore instance (custom helper for scripts)."""
+        return _CURRENT_TRADING_CORE
 
     def _create_config_adapter_from_dict(self, config_dict: Dict[str, Any]) -> ClientConfigAdapter:
         """Create a ClientConfigAdapter from a dictionary."""
@@ -672,6 +684,122 @@ class TradingCore:
         if self.markets_recorder:
             for connector in self.connector_manager.connectors.values():
                 self.markets_recorder.add_market(connector)
+
+    async def reinitialize_markets(self, market_names: List[Tuple[str, List[str]]]):
+        """
+        Dynamically rebuild connectors with new trading_pairs while the engine is running.
+
+        Notes:
+        - We tear down and recreate connectors for provided names.
+        - We ensure clock ordering: connectors should tick before the strategy. We temporarily remove the strategy
+          from the clock, re-add connectors, then re-add the strategy.
+        - Markets recorder will be updated accordingly.
+        """
+        self.logger().info("[dynamic-ws] Reinitializing markets...")
+
+        # Capture strategy for clock ordering
+        strategy_ref = self.strategy
+        strategy_in_clock = self.clock is not None and strategy_ref is not None
+
+        # If strategy exists in clock, temporarily remove it to keep connectors ahead in tick order
+        if strategy_in_clock:
+            try:
+                self.clock.remove_iterator(strategy_ref)
+                self.logger().debug("[dynamic-ws] Temporarily removed strategy from clock to adjust iterator order.")
+            except Exception as e:
+                self.logger().warning(f"[dynamic-ws] Failed to remove strategy from clock: {e}")
+
+        # Remove and recreate specified connectors
+        existing_names = set(self.connector_manager.connectors.keys())
+        target_names = set(name for name, _ in market_names)
+
+        # Remove only those we will recreate (keep unrelated ones intact)
+        for name in target_names:
+            if name in existing_names:
+                try:
+                    self.logger().info(f"[dynamic-ws] Removing connector: {name}")
+                    self.remove_connector(name)
+                except Exception as e:
+                    self.logger().error(f"[dynamic-ws] Error removing connector {name}: {e}")
+
+        # Recreate connectors with new trading pairs
+        for name, pairs in market_names:
+            try:
+                self.logger().info(f"[dynamic-ws] Creating connector {name} with {len(pairs)} pairs...")
+                connector = self.connector_manager.create_connector(name, pairs, self._trading_required)
+                if self.clock and connector:
+                    self.clock.add_iterator(connector)
+                if self.markets_recorder and connector:
+                    self.markets_recorder.add_market(connector)
+            except Exception as e:
+                self.logger().error(f"[dynamic-ws] Error creating connector {name}: {e}")
+
+        # Re-add strategy to clock to keep proper ordering (connectors update first)
+        if strategy_in_clock:
+            try:
+                self.clock.add_iterator(strategy_ref)
+                self.logger().debug("[dynamic-ws] Strategy re-added to clock after connectors.")
+            except Exception as e:
+                self.logger().warning(f"[dynamic-ws] Failed to re-add strategy to clock: {e}")
+
+        # Refresh backward compatibility maps
+        self._initialize_markets_for_strategy()
+
+        self.logger().info("[dynamic-ws] Markets reinitialized.")
+
+    async def with_temp_connectors(self,
+                                   connector_names: List[str],
+                                   fn: Callable[[Dict[str, ExchangeBase]], Any]):
+        """
+        Helper to create temporary connectors (not added to clock) for read-only REST operations
+        like querying trading rules, prices, and funding info. Connectors are cleaned up after `fn` completes.
+        """
+        self.logger().debug(f"[dynamic-ws] Creating temp connectors for: {','.join(connector_names)}")
+        temp_connectors: Dict[str, ExchangeBase] = {}
+        try:
+            for con in connector_names:
+                temp_connectors[con] = self.connector_manager.create_connector(con, [], self._trading_required)
+                await temp_connectors[con].start_trading_rules_polling()
+
+            # Wait until trading rules are initialized
+            while True:
+                all_loaded = all(ex.status_dict.get("trading_rule_initialized", False) for ex in temp_connectors.values())
+                if all_loaded:
+                    break
+                self.logger().debug("[dynamic-ws] Waiting temp trading rules to initialize...")
+                await asyncio.sleep(1)
+
+            self.logger().debug("[dynamic-ws] Temp connectors ready. Executing provided function...")
+            return await fn(temp_connectors)
+        finally:
+            # Stop polling and remove temp connectors
+            for con in list(temp_connectors.keys()):
+                try:
+                    await temp_connectors[con].stop_trading_rules_polling()
+                except Exception:
+                    pass
+                try:
+                    self.connector_manager.remove_connector(con)
+                except Exception:
+                    pass
+            self.logger().debug("[dynamic-ws] Temp connectors cleaned up.")
+
+    async def fetch_supported_trading_pairs(self, connector_names: List[str]) -> Dict[str, Set[str]]:
+        """
+        Return all supported trading pairs for the given connectors by leveraging temporary connectors.
+        """
+        async def _collect(temp_connectors: Dict[str, ExchangeBase]):
+            result = {}
+            for con, ex in temp_connectors.items():
+                result[con] = set(ex.trading_rules.keys())
+                self.logger().info(f"[dynamic-ws] Supported pairs of {con}: {len(result[con])}")
+            return result
+
+        return await self.with_temp_connectors(connector_names, _collect)
+
+    def get_connectors_map(self) -> Dict[str, ExchangeBase]:
+        """Expose current connectors map."""
+        return self.connector_manager.connectors
 
     def get_balance(self, connector_name: str, asset: str) -> float:
         """Get balance for an asset from a connector."""
