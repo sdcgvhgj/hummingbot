@@ -752,6 +752,12 @@ class FundingRateArbitrage(StrategyV2Base):
 
         # Apply
         await core.reinitialize_markets(market_names)
+        # Refresh strategy connector references to the newly created instances
+        try:
+            self.connectors = core.get_connectors_map()
+            self.logger().info("[dynamic-topk] Strategy connectors map refreshed after reinit.")
+        except Exception as e:
+            self.logger().warning(f"[dynamic-topk] Failed to refresh connectors map: {e}")
         # Re-apply leverage & position mode for new pairs
         self.apply_initial_setting()
 
