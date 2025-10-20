@@ -17,6 +17,7 @@ from hummingbot.strategy.strategy_v2_base import StrategyV2Base, StrategyV2Confi
 from hummingbot.strategy_v2.executors.position_executor.data_types import PositionExecutorConfig, TripleBarrierConfig
 from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, StopExecutorAction
 from hummingbot.strategy_v2.models.executors_info import ExecutorInfo
+from hummingbot.core.trading_core import TradingCore
 
 COOL_DOWN_COUNT = 60 * 60 * 24
 
@@ -133,6 +134,8 @@ class FundingRateArbitrage(StrategyV2Base):
         self.tokens_supported_exchange_map = dict()
         self.token_failure_cool_down = {token: 0 for token in self.config.tokens}
         self._dynamic_scan_task = None
+        self._dynamic_topk_tokens = set(self.config.tokens)
+        self._latest_topk_debug = []
 
     def start(self, clock: Clock, timestamp: float) -> None:
         """
@@ -174,6 +177,9 @@ class FundingRateArbitrage(StrategyV2Base):
                 connector.set_position_mode(self.position_mode_map.get(connector_name, PositionMode.HEDGE))
                 for trading_pair in self.market_data_provider.get_trading_pairs(connector_name):
                     connector.set_leverage(trading_pair, self.config.leverage)
+
+    def tokens_for_trading(self):
+        return self._dynamic_topk_tokens if getattr(self.config, "dynamic_topk_enabled", False) else self.config.tokens
 
     async def _dynamic_scan_loop(self):
         """
@@ -292,7 +298,7 @@ class FundingRateArbitrage(StrategyV2Base):
         and if one gets filled buy market the other one to improve the entry prices.
         """
         create_actions = []
-        for token in self.config.tokens:
+        for token in self.tokens_for_trading():
             if token not in self.active_funding_arbitrages:
                 self.token_failure_cool_down[token] -= 1
                 if self.token_failure_cool_down[token] > 0:
@@ -495,6 +501,7 @@ class FundingRateArbitrage(StrategyV2Base):
             all_funding_info = []
             all_best_paths = []
             for token in self.config.tokens:
+                
                 token_info = {"token": token}
                 funding_info_report = self.get_funding_info_by_token(token)
                 for connector_name, info in funding_info_report.items():
@@ -638,3 +645,136 @@ class FundingRateArbitrage(StrategyV2Base):
             funding_rate_status.append( \
                 format_df_for_printout(df=pd.DataFrame(stopped_arbitrage_info), table_format="psql",))
         return original_status + "\n".join(funding_rate_status)
+
+    async def _compute_topk_via_rest(self):
+        """
+        Compute Top-K tokens by expected profitability using REST (prices + funding info) across current connectors.
+        Only considers tokens tradable on all configured connectors.
+        """
+        core = TradingCore.get_instance()
+        connector_names = list(self.connectors.keys())
+        self.logger().info(f"[dynamic-topk] Starting REST scan across connectors: {connector_names}")
+
+        async def _do_scan(temp_connectors: Dict[str, ConnectorBase]):
+            # 1) Collect supported pairs per connector
+            supported_pairs = {name: set(ex.trading_rules.keys()) for name, ex in temp_connectors.items()}
+            self.logger().info("[dynamic-topk] Supported pairs sizes: " + ", ".join(
+                f"{k}={len(v)}" for k, v in supported_pairs.items()))
+
+            # 2) Build base->pair mapping per connector
+            base_to_pair: Dict[str, Dict[str, str]] = {}
+            for name, pairs in supported_pairs.items():
+                for pair in pairs:
+                    try:
+                        base, quote = pair.split("-")
+                    except Exception:
+                        continue
+                    d = base_to_pair.setdefault(base, {})
+                    d[name] = pair
+
+            # 3) Consider bases present on all connectors
+            required = set(temp_connectors.keys())
+            candidate_bases = [b for b, m in base_to_pair.items() if required.issubset(m.keys())]
+            self.logger().info(f"[dynamic-topk] Candidate bases: {len(candidate_bases)}")
+
+            # 4) Evaluate profitability for each base for both trade directions
+            results = []
+            for base in candidate_bases:
+                name_list = list(required)
+                c1, c2 = name_list[0], name_list[1]
+                p1 = base_to_pair[base][c1]
+                p2 = base_to_pair[base][c2]
+                try:
+                    # Prices
+                    price_1 = Decimal(str(await temp_connectors[c1]._get_last_traded_price(p1)))
+                    price_2 = Decimal(str(await temp_connectors[c2]._get_last_traded_price(p2)))
+
+                    # Funding
+                    f1 = await temp_connectors[c1]._orderbook_ds.get_funding_info(p1)
+                    f2 = await temp_connectors[c2]._orderbook_ds.get_funding_info(p2)
+
+                    # Fees (taker, market, open)
+                    amt_1 = self.config.position_size_quote / price_1 if price_1 > 0 else Decimal("0")
+                    amt_2 = self.config.position_size_quote / price_2 if price_2 > 0 else Decimal("0")
+                    fee_1 = temp_connectors[c1].get_fee(
+                        base_currency=base, quote_currency=p1.split("-")[1], order_type=OrderType.MARKET,
+                        order_side=TradeType.BUY, amount=amt_1, price=price_1, is_maker=False,
+                        position_action=PositionAction.OPEN).percent
+                    fee_2 = temp_connectors[c2].get_fee(
+                        base_currency=base, quote_currency=p2.split("-")[1], order_type=OrderType.MARKET,
+                        order_side=TradeType.BUY, amount=amt_2, price=price_2, is_maker=False,
+                        position_action=PositionAction.OPEN).percent
+
+                    # Direction A: BUY on c1, SELL on c2
+                    price_profit_a = (price_2 - price_1) / price_1
+                    funding_profit_a = f2.rate - f1.rate
+                    trade_profit_a = price_profit_a + funding_profit_a - fee_1 * 2 - fee_2 * 2
+
+                    # Direction B: BUY on c2, SELL on c1
+                    price_profit_b = (price_1 - price_2) / price_2
+                    funding_profit_b = f1.rate - f2.rate
+                    trade_profit_b = price_profit_b + funding_profit_b - fee_1 * 2 - fee_2 * 2
+
+                    if trade_profit_a >= trade_profit_b:
+                        results.append({
+                            "base": base, "buy": c1, "sell": c2, "p_buy": p1, "p_sell": p2,
+                            "profit": trade_profit_a, "rates": (f1.rate, f2.rate), "prices": (price_1, price_2),
+                            "fees": (fee_1, fee_2)
+                        })
+                    else:
+                        results.append({
+                            "base": base, "buy": c2, "sell": c1, "p_buy": p2, "p_sell": p1,
+                            "profit": trade_profit_b, "rates": (f2.rate, f1.rate), "prices": (price_2, price_1),
+                            "fees": (fee_2, fee_1)
+                        })
+                except Exception as e:
+                    self.logger().debug(f"[dynamic-topk] Skip {base} due to error: {e}")
+
+            # Sort and take Top-K
+            results.sort(key=lambda x: float(x["profit"]), reverse=True)
+            topk = results[: int(self.config.topk)]
+            return topk
+
+        topk = await core.with_temp_connectors(connector_names, _do_scan)
+        self._latest_topk_debug = topk
+        bases = [r["base"] for r in topk]
+        self._dynamic_topk_tokens = set(bases)
+        self.logger().info("[dynamic-topk] TopK bases: " + ",".join(bases))
+
+        # Build target markets list per connector
+        target: Dict[str, List[str]] = {name: [] for name in self.connectors.keys()}
+        for r in topk:
+            target[r["buy"]].append(r["p_buy"])
+            target[r["sell"]].append(r["p_sell"])
+        market_names = [(name, list(sorted(set(pairs)))) for name, pairs in target.items()]
+        self.logger().info("[dynamic-topk] Reinitialize markets with: " + "; ".join(
+            f"{n}={len(ps)}" for n, ps in market_names))
+
+        # Apply
+        await core.reinitialize_markets(market_names)
+        # Re-apply leverage & position mode for new pairs
+        self.apply_initial_setting()
+
+    async def _dynamic_scan_loop(self):
+        import asyncio
+        from datetime import datetime, timedelta
+        self.logger().info(f"[dynamic-topk] Scanner loop initialized: every {self.config.scan_interval_hours}h on the hour.")
+        while True:
+            try:
+                now = datetime.utcnow()
+                next_hour = (now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
+                sleep_secs = (next_hour - now).total_seconds()
+                await asyncio.sleep(sleep_secs)
+
+                hour = next_hour.hour
+                if hour % int(self.config.scan_interval_hours) != 0:
+                    self.logger().debug(f"[dynamic-topk] Skipping hour {hour}, not interval boundary.")
+                    continue
+
+                self.logger().info("[dynamic-topk] Triggering REST scan")
+                await self._compute_topk_via_rest()
+            except asyncio.CancelledError:
+                self.logger().info("[dynamic-topk] Scanner task cancelled.")
+                break
+            except Exception as e:
+                self.logger().error(f"[dynamic-topk] Scanner loop error: {e}")
