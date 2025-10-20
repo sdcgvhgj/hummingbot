@@ -250,8 +250,9 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         self.logger().debug("BybitPerp requesting order_book_snapshot for " + trading_pair)
         snapshot_response = await self._request_order_book_snapshot(trading_pair)
         snapshot_data = snapshot_response["result"]
-        timestamp = float(snapshot_data["ts"])
-        update_id = self._nonce_provider.get_tracking_nonce(timestamp=timestamp)
+        # Bybit returns ts in milliseconds, convert to seconds to align with internal timebase
+        timestamp_seconds = int(snapshot_data["ts"]) / 1e3
+        update_id = self._nonce_provider.get_tracking_nonce(timestamp=timestamp_seconds)
 
         bids, asks = self._get_bids_and_asks_from_rest_msg_data(snapshot_data)
         order_book_message_content = {
@@ -263,7 +264,7 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         snapshot_msg: OrderBookMessage = OrderBookMessage(
             message_type=OrderBookMessageType.SNAPSHOT,
             content=order_book_message_content,
-            timestamp=timestamp,
+                timestamp=timestamp_seconds,
         )
 
         return snapshot_msg
@@ -272,6 +273,8 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         params = {
             "category": "linear" if web_utils.is_linear_perpetual(trading_pair) else "inverse",
             "symbol": await self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair),
+            # Align REST snapshot depth with WS topic (orderbook.50)
+            "limit": "50",
         }
 
         rest_assistant = await self._api_factory.get_rest_assistant()
@@ -321,8 +324,8 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         for bid in bids_list:
             bid_price = float(bid[0])
             bid_size = float(bid[1])
+            # Size of 0 means delete the entry per Bybit WS delta semantics
             # if bid_size == 0:
-            #     # Size of 0 means delete the entry
             #     continue
             bids.append((bid_price, bid_size))
 
@@ -330,8 +333,8 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         for ask in asks_list:
             ask_price = float(ask[0])
             ask_size = float(ask[1])
+            # Size of 0 means delete the entry per Bybit WS delta semantics
             # if ask_size == 0:
-            #     # Size of 0 means delete the entry
             #     continue
             asks.append((ask_price, ask_size))
 
