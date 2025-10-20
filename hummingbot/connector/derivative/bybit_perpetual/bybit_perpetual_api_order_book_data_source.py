@@ -133,30 +133,21 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
                 await self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
                 for trading_pair in trading_pairs
             ]
-            symbols_str = "|".join(symbols)
+            # Build per-symbol args per Bybit v5 protocol (do NOT join with '|')
+            trade_args = [f"{CONSTANTS.WS_TRADES_TOPIC}.{s}" for s in symbols]
+            orderbook_args = [f"{CONSTANTS.WS_ORDER_BOOK_EVENTS_TOPIC}.{s}" for s in symbols]
+            instruments_args = [f"{CONSTANTS.WS_INSTRUMENTS_INFO_TOPIC}.{s}" for s in symbols]
 
-            payload = {
-                "op": "subscribe",
-                "args": [f"{CONSTANTS.WS_TRADES_TOPIC}.{symbols_str}"],
-            }
-            subscribe_trade_request = WSJSONRequest(payload=payload)
+            # Extra logs to help verify subscriptions
+            self.logger().debug(f"Bybit WS subscribing {len(symbols)} symbol(s)")
+            self.logger().debug(f"trade_args={trade_args}")
+            self.logger().debug(f"orderbook_args={orderbook_args}")
+            self.logger().debug(f"instruments_args={instruments_args}")
 
-            payload = {
-                "op": "subscribe",
-                "args": [f"{CONSTANTS.WS_ORDER_BOOK_EVENTS_TOPIC}.{symbols_str}"],
-            }
-            subscribe_orderbook_request = WSJSONRequest(payload=payload)
-
-            payload = {
-                "op": "subscribe",
-                "args": [f"{CONSTANTS.WS_INSTRUMENTS_INFO_TOPIC}.{symbols_str}"],
-            }
-            subscribe_instruments_request = WSJSONRequest(payload=payload)
-
-            await ws.send(subscribe_trade_request)  # not rate-limited
-            await ws.send(subscribe_orderbook_request)  # not rate-limited
-            await ws.send(subscribe_instruments_request)  # not rate-limited
-            self.logger().info("Subscribed to public order book, trade and funding info channels...")
+            await ws.send(WSJSONRequest(payload={"op": "subscribe", "args": trade_args}))  # not rate-limited
+            await ws.send(WSJSONRequest(payload={"op": "subscribe", "args": orderbook_args}))  # not rate-limited
+            await ws.send(WSJSONRequest(payload={"op": "subscribe", "args": instruments_args}))  # not rate-limited
+            self.logger().debug("Subscribed to public order book, trade and funding info channels (per-symbol args)...")
         except asyncio.CancelledError:
             raise
         except Exception:
