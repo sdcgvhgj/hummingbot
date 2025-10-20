@@ -210,6 +210,11 @@ class OrderBookTracker:
 
                 if order_book.snapshot_uid > ob_message.update_id:
                     messages_rejected += 1
+                    try:
+                        self.logger().debug(
+                            f"Reject diff for {trading_pair}: diff_u={ob_message.update_id} <= snapshot_uid={order_book.snapshot_uid}")
+                    except Exception:
+                        pass
                     continue
                 await message_queue.put(ob_message)
                 messages_accepted += 1
@@ -284,12 +289,25 @@ class OrderBookTracker:
                         diff_messages_accepted = 0
                     last_message_timestamp = now
                 elif message.type is OrderBookMessageType.SNAPSHOT:
+                    before_bid = order_book.get_price(False)
+                    before_ask = order_book.get_price(True)
                     debug_log = f"Processing orderbook snapshot for {trading_pair}, " + \
                                 f"domain={self._domain}, " + \
-                                f"before-price=({order_book.get_price(False):.5f},{order_book.get_price(True):.5f}), "
+                                f"snapshot_uid={message.update_id}, prev_snapshot_uid={order_book.snapshot_uid}, " + \
+                                f"before-price=({before_bid:.5f},{before_ask:.5f}), "
                     past_diffs: List[OrderBookMessage] = list(past_diffs_window)
+                    # Print past diffs window summary (size, head/tail update_ids)
+                    try:
+                        past_len = len(past_diffs)
+                        head_ids = [(d.update_id, d.bids, d.asks) for d in past_diffs[:5]]
+                        tail_ids = [(d.update_id, d.bids, d.asks) for d in past_diffs[-5:]] if past_len >= 5 else [(d.update_id, d.bids, d.asks) for d in past_diffs]
+                        debug_log += f"past_diffs_window(size={past_len}, head={head_ids}, tail={tail_ids}), "
+                    except Exception:
+                        pass
                     order_book.restore_from_snapshot_and_diffs(message, past_diffs)
-                    debug_log += f"after-price=({order_book.get_price(False):.5f},{order_book.get_price(True):.5f})"
+                    after_bid = order_book.get_price(False)
+                    after_ask = order_book.get_price(True)
+                    debug_log += f"after-price=({after_bid:.5f},{after_ask:.5f})"
                     self.logger().debug(debug_log)
             except asyncio.CancelledError:
                 raise

@@ -198,6 +198,8 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             diffs_data = raw_message["data"]
             # Use Bybit engine update id 'u' as the canonical update_id for ordering
             update_id = int(diffs_data.get("u")) if isinstance(diffs_data, dict) and "u" in diffs_data else self._nonce_provider.get_tracking_nonce(timestamp=timestamp_seconds)
+            seq = diffs_data.get("seq") if isinstance(diffs_data, dict) else None
+            self.logger().debug(f"WS delta {trading_pair} u={update_id}, seq={seq}, ts={timestamp_seconds}")
             bids, asks = self._get_bids_and_asks_from_ws_msg_data(diffs_data)
             order_book_message_content = {
                 "trading_pair": trading_pair,
@@ -220,6 +222,8 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             timestamp_seconds = int(raw_message.get("ts", 0)) / 1e3
             snapshot_data = raw_message["data"]
             update_id = int(snapshot_data.get("u", 0))
+            seq = snapshot_data.get("seq")
+            self.logger().debug(f"WS snapshot {trading_pair} u={update_id}, seq={seq}, ts={timestamp_seconds}")
             bids, asks = self._get_bids_and_asks_from_ws_msg_data(snapshot_data)
             order_book_message_content = {
                 "trading_pair": trading_pair,
@@ -281,6 +285,7 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         timestamp_seconds = int(snapshot_data["ts"]) / 1e3
         # Use engine update id 'u' from snapshot for correct ordering
         update_id = int(snapshot_data.get("u", 0))
+        self.logger().debug(f"REST snapshot {trading_pair} u={update_id}, ts={timestamp_seconds}")
 
         bids, asks = self._get_bids_and_asks_from_rest_msg_data(snapshot_data)
         order_book_message_content = {
