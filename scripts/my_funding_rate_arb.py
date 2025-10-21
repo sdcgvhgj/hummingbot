@@ -181,37 +181,6 @@ class FundingRateArbitrage(StrategyV2Base):
     def tokens_for_trading(self):
         return self._dynamic_topk_tokens if getattr(self.config, "dynamic_topk_enabled", False) else self.config.tokens
 
-    async def _dynamic_scan_loop(self):
-        """
-        Background loop to periodically scan all symbols via REST, select Top-K by expected profitability,
-        and refresh WS subscriptions by rebuilding connectors through TradingCore.
-        This initial implementation only logs scheduling and placeholders; REST scan logic is added in a later commit.
-        """
-        import asyncio
-        from datetime import datetime, timedelta
-        self.logger().info(f"[dynamic-topk] Scanner loop initialized: every {self.config.scan_interval_hours}h on the hour.")
-        # Align to next full hour
-        while True:
-            try:
-                now = datetime.utcnow()
-                next_hour = (now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
-                sleep_secs = (next_hour - now).total_seconds()
-                await asyncio.sleep(sleep_secs)
-
-                # Check if this hour matches the interval boundary
-                hour = next_hour.hour
-                if hour % int(self.config.scan_interval_hours) != 0:
-                    self.logger().debug(f"[dynamic-topk] Skipping hour {hour}, not interval boundary.")
-                    continue
-
-                self.logger().info("[dynamic-topk] Triggering REST scan (placeholder)")
-                # Placeholder: REST scan + Top-K selection will be implemented in next commit
-            except asyncio.CancelledError:
-                self.logger().info("[dynamic-topk] Scanner task cancelled.")
-                break
-            except Exception as e:
-                self.logger().error(f"[dynamic-topk] Scanner loop error: {e}")
-
     def get_funding_info_by_token(self, token):
         """
         This method provides the funding rates across all the connectors
@@ -750,8 +719,13 @@ class FundingRateArbitrage(StrategyV2Base):
         self.logger().info("[dynamic-topk] Reinitialize markets with: " + "; ".join(
             f"{n}={len(ps)}" for n, ps in market_names))
 
+        for name, pairs in market_names:
+            self.logger().info(f"[dynamic-topk] {name} pairs: {pairs}")
+
         # Apply
-        await core.reinitialize_markets(market_names)
+        # await core.reinitialize_markets(market_names)
+        # for debugging
+
         # Refresh strategy connector references to the newly created instances
         try:
             self.connectors = core.get_connectors_map()
@@ -762,6 +736,10 @@ class FundingRateArbitrage(StrategyV2Base):
         self.apply_initial_setting()
 
     async def _dynamic_scan_loop(self):
+        """
+        Background loop to periodically scan all symbols via REST, select Top-K by expected profitability,
+        and refresh WS subscriptions by rebuilding connectors through TradingCore.
+        """
         import asyncio
         from datetime import datetime, timedelta
         self.logger().info(f"[dynamic-topk] Scanner loop initialized: every {self.config.scan_interval_hours}h on the hour.")
@@ -770,12 +748,13 @@ class FundingRateArbitrage(StrategyV2Base):
                 now = datetime.utcnow()
                 next_hour = (now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
                 sleep_secs = (next_hour - now).total_seconds()
-                await asyncio.sleep(sleep_secs)
+                # await asyncio.sleep(sleep_secs)
+                await asyncio.sleep(120) # for debugging
 
                 hour = next_hour.hour
-                if hour % int(self.config.scan_interval_hours) != 0:
-                    self.logger().debug(f"[dynamic-topk] Skipping hour {hour}, not interval boundary.")
-                    continue
+                # if hour % int(self.config.scan_interval_hours) != 0:
+                #     self.logger().debug(f"[dynamic-topk] Skipping hour {hour}, not interval boundary.")
+                #     continue
 
                 self.logger().info("[dynamic-topk] Triggering REST scan")
                 await self._compute_topk_via_rest()
