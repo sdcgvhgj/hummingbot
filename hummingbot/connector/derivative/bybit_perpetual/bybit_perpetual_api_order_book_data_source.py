@@ -179,7 +179,7 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
                 channel = self._funding_info_messages_queue_key
             else:
                 self.logger().debug(f"Unknown event channel: {event_channel}")
-        self.logger().debug(f"Channel originating message: {channel}")
+        # self.logger().debug(f"Channel originating message: {channel}")
         return channel
 
     async def _parse_order_book_diff_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
@@ -193,7 +193,7 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             # Use Bybit engine update id 'u' as the canonical update_id for ordering
             update_id = int(diffs_data.get("u")) if isinstance(diffs_data, dict) and "u" in diffs_data else self._nonce_provider.get_tracking_nonce(timestamp=timestamp_seconds)
             seq = diffs_data.get("seq") if isinstance(diffs_data, dict) else None
-            self.logger().debug(f"WS delta {trading_pair} u={update_id}, seq={seq}, ts={timestamp_seconds}")
+            # self.logger().debug(f"WS delta {trading_pair} u={update_id}, seq={seq}, ts={timestamp_seconds}")
             bids, asks = self._get_bids_and_asks_from_ws_msg_data(diffs_data)
             order_book_message_content = {
                 "trading_pair": trading_pair,

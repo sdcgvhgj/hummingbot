@@ -103,7 +103,7 @@ class OrderBookTrackerDataSource(metaclass=ABCMeta):
         while True:
             try:
                 diff_event = await message_queue.get()
-                self.logger().debug(f"order-book-diffs loop, get diff message")
+                # self.logger().debug(f"order-book-diffs loop, get diff message")
                 await self._parse_order_book_diff_message(raw_message=diff_event, message_queue=output)
 
             except asyncio.CancelledError:

@@ -375,14 +375,14 @@ class FundingRateArbitrage(StrategyV2Base):
             executors_pnl = sum(executor.net_pnl_pct for executor in executors)
             price_1 = funding_arbitrage_info['price_1']
             executors_pnl_by_hand = (a_price_2 - a_price_1 - c_price_2 + c_price_1) / price_1 - fee_1 - fee_2
-            self.logger().debug(f"{token} executors_pnl={executors_pnl:.4%}, by_hand={executors_pnl_by_hand:.4%}")
+            # self.logger().debug(f"{token} executors_pnl={executors_pnl:.4%}, by_hand={executors_pnl_by_hand:.4%}")
             executors_trade_pnl = sum(executor.custom_info['trade_pnl_pct'] for executor in executors)
             trade_pnl_by_had = (a_price_2 - a_price_1 - c_price_2 + c_price_1) / price_1
-            self.logger().debug(f"{executors_trade_pnl=:.4%}, by_hand={trade_pnl_by_had:.4%}")
-            self.logger().debug(f"{a_price_1=:.7f},{a_price_2=:.7f},{c_price_1=:.7f},{c_price_2=:.7f}")
+            # self.logger().debug(f"{executors_trade_pnl=:.4%}, by_hand={trade_pnl_by_had:.4%}")
+            # self.logger().debug(f"{a_price_1=:.7f},{a_price_2=:.7f},{c_price_1=:.7f},{c_price_2=:.7f}")
             executor_1, executor_2 = executors
-            self.logger().debug(f"{executor_1.custom_info['entry_price']=:.7f},{executor_2.custom_info['entry_price']=:.7f}")
-            self.logger().debug(f"{executor_1.custom_info['close_price']=:.7f},{executor_2.custom_info['close_price']=:.7f}")
+            # self.logger().debug(f"{executor_1.custom_info['entry_price']=:.7f},{executor_2.custom_info['entry_price']=:.7f}")
+            # self.logger().debug(f"{executor_1.custom_info['close_price']=:.7f},{executor_2.custom_info['close_price']=:.7f}")
             funding_info_report = self.get_funding_info_by_token(token)
             rate_1 = funding_info_report[connector_1].rate
             rate_2 = funding_info_report[connector_2].rate
