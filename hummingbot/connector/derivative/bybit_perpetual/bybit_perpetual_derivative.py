@@ -853,10 +853,11 @@ class BybitPerpetualDerivative(PerpetualDerivativePyBase):
         else:
             # TODO: Check how to handle - signs and filter by exchange_symbol
             last_data = data[0]
-            funding_rate: Decimal = Decimal(str(last_data["funding"]))
+            payment: Decimal = Decimal(str(last_data["funding"]))
             position_size: Decimal = Decimal(str(last_data["size"]))
-            payment: Decimal = funding_rate * position_size
+            funding_rate: Decimal = payment / position_size
             timestamp: int = int(last_data["transactionTime"]) / 1e3
+            self.logger().debug(f"Bybit funding payment for {trading_pair} at {timestamp} with payment {payment}, funding rate {funding_rate}, position size {position_size}")
 
         return timestamp, funding_rate, payment
 
