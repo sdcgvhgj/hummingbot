@@ -475,7 +475,7 @@ class FundingRateArbitrage(StrategyV2Base):
         if self.ready_to_trade:
             all_funding_info = []
             all_best_paths = []
-            for token in self.config.tokens:
+            for token in self.tokens_for_trading():
                 
                 token_info = {"token": token}
                 funding_info_report = self.get_funding_info_by_token(token)
@@ -736,20 +736,15 @@ class FundingRateArbitrage(StrategyV2Base):
 
         for name, pairs in market_names:
             self.logger().info(f"[dynamic-topk] {name} pairs: {pairs}")
+        
+        # Initialize stopped funding arbitrages for new tokens
+        for token in self._dynamic_topk_tokens:
+            if token not in self.stopped_funding_arbitrages:
+                self.stopped_funding_arbitrages[token] = []
 
         # Apply
-        # await core.reinitialize_markets(market_names)
-        # for debugging
+        await core.reinitialize_markets(market_names)
 
-        # Refresh strategy connector references to the newly created instances
-        try:
-            self.ready_to_trade = False
-            # self.connectors = core.get_connectors_map()
-            self.logger().info("[dynamic-topk] Strategy connectors map refreshed after reinit.")
-        except Exception as e:
-            self.logger().warning(f"[dynamic-topk] Failed to refresh connectors map: {e}")
-        # Re-apply leverage & position mode for new pairs
-        self.apply_initial_setting()
         # Are there more things to do here?
 
     async def _dynamic_scan_loop(self):
@@ -760,23 +755,31 @@ class FundingRateArbitrage(StrategyV2Base):
         import asyncio
         from datetime import datetime, timedelta
         self.logger().info(f"[dynamic-topk] Scanner loop initialized: every {self.config.scan_interval_hours}h on the hour.")
+        is_first_scan = True
         while True:
             try:
-                now = datetime.utcnow()
-                next_hour = (now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
-                sleep_secs = (next_hour - now).total_seconds()
-                # await asyncio.sleep(sleep_secs)
-                await asyncio.sleep(120) # for debugging
+                if not self.ready_to_trade:
+                    self.logger().debug(f"[dynamic-topk] Waiting for ready to trade...")
+                    await asyncio.sleep(1)
+                    continue
 
-                hour = next_hour.hour
-                # if hour % int(self.config.scan_interval_hours) != 0:
-                #     self.logger().debug(f"[dynamic-topk] Skipping hour {hour}, not interval boundary.")
-                #     continue
+                if not is_first_scan:
+                    now = datetime.utcnow()
+                    next_half_hour = (now.replace(minute=30, second=0, microsecond=0) + timedelta(hours=1))
+                    sleep_secs = (next_half_hour - now).total_seconds()
+                    await asyncio.sleep(sleep_secs)
+
+                    hour = next_half_hour.hour
+                    if hour % int(self.config.scan_interval_hours) != 0:
+                        self.logger().debug(f"[dynamic-topk] Skipping hour {hour}, not interval boundary.")
+                        continue
 
                 if len(self.active_funding_arbitrages) > 0:
-                    self.logger().debug(f"[dynamic-topk] Skipping REST scan because there are active arbitrages")
+                    self.logger().debug(f"[dynamic-topk] Skipping REST scan because there are active arbitrages...")
                     self.is_stopping_creating_actions = True
                     continue
+
+                is_first_scan = False
 
                 self.logger().info("[dynamic-topk] Triggering REST scan")
                 await self._compute_topk_via_rest()

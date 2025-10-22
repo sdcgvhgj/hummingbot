@@ -33,6 +33,7 @@ from hummingbot.strategy.market_trading_pair_tuple import MarketTradingPairTuple
 from hummingbot.strategy.script_strategy_base import ScriptStrategyBase
 from hummingbot.strategy.strategy_base import StrategyBase
 from hummingbot.strategy.strategy_v2_base import StrategyV2Base, StrategyV2ConfigBase
+from hummingbot.data_feed.market_data_provider import MarketDataProvider
 
 # Constants
 s_decimal_0 = Decimal("0")
@@ -714,13 +715,12 @@ class TradingCore:
         target_names = set(name for name, _ in market_names)
 
         # Remove only those we will recreate (keep unrelated ones intact)
-        for name in target_names:
-            if name in existing_names:
-                try:
-                    self.logger().info(f"[dynamic-ws] Removing connector: {name}")
-                    self.remove_connector(name)
-                except Exception as e:
-                    self.logger().error(f"[dynamic-ws] Error removing connector {name}: {e}")
+        for name in existing_names:
+            try:
+                self.logger().info(f"[dynamic-ws] Removing connector: {name}")
+                self.remove_connector(name)
+            except Exception as e:
+                self.logger().error(f"[dynamic-ws] Error removing connector {name}: {e}")
 
         # Recreate connectors with new trading pairs
         for name, pairs in market_names:
@@ -733,6 +733,11 @@ class TradingCore:
                     self.markets_recorder.add_market(connector)
             except Exception as e:
                 self.logger().error(f"[dynamic-ws] Error creating connector {name}: {e}")
+        
+        strategy_ref.connectors = self.get_connectors_map()
+        strategy_ref.market_data_provider = MarketDataProvider(strategy_ref.connectors)
+        strategy_ref.add_markets(list(strategy_ref.connectors.values()))
+        strategy_ref.ready_to_trade = False
 
         # Re-add strategy to clock to keep proper ordering (connectors update first)
         if strategy_in_clock:

@@ -13,7 +13,7 @@ from hummingbot.logger import HummingbotLogger
 
 class OrderBookTrackerDataSource(metaclass=ABCMeta):
     FULL_ORDER_BOOK_RESET_DELTA_SECONDS = 60 * 60
-    FULL_ORDER_BOOK_RESET_DELTA_SECONDS = 1 * 60 # for debug
+    # FULL_ORDER_BOOK_RESET_DELTA_SECONDS = 1 * 60 # for debug
 
     _logger: Optional[HummingbotLogger] = None
 
