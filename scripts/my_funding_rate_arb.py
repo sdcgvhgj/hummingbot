@@ -3,6 +3,7 @@ from decimal import Decimal
 from typing import Dict, List, Set
 from datetime import datetime, timedelta
 import time
+import json
 
 import pandas as pd
 from pydantic import Field, field_validator
@@ -136,6 +137,7 @@ class FundingRateArbitrage(StrategyV2Base):
         self._dynamic_scan_task = None
         self._dynamic_topk_tokens = set(self.config.tokens)
         self._latest_topk_debug = []
+        self.is_stopping_creating_actions = False
 
     def start(self, clock: Clock, timestamp: float) -> None:
         """
@@ -269,6 +271,7 @@ class FundingRateArbitrage(StrategyV2Base):
         create_actions = []
         for token in self.tokens_for_trading():
             if token not in self.active_funding_arbitrages:
+                self.token_failure_cool_down.setdefault(token, 0)
                 self.token_failure_cool_down[token] -= 1
                 if self.token_failure_cool_down[token] > 0:
                     continue
@@ -295,6 +298,9 @@ class FundingRateArbitrage(StrategyV2Base):
                                        f"fee_1={self.format_percent(fee_1)} | fee_2={self.format_percent(fee_2)} | "
                                        f"balance_1={balance_1:.3f} | balance_2={balance_2:.3f} | "
                                        f"expected_profitability={self.format_percent(expected_profitability)} ")
+                    if self.is_stopping_creating_actions:
+                        self.logger().debug(f"Stopping creating actions, skipping creation of executors for {token}")
+                        continue
                     self.logger().info(f"Starting executors...")
                     position_executor_config_1, position_executor_config_2 = \
                         self.get_position_executors_config(token, connector_1, connector_2, trade_side, price_1, price_2)
@@ -638,66 +644,61 @@ class FundingRateArbitrage(StrategyV2Base):
                         base, quote = pair.split("-")
                     except Exception:
                         continue
+                    if self.quote_markets_map.get(name, 'USDT') != quote:
+                        continue
                     d = base_to_pair.setdefault(base, {})
                     d[name] = pair
 
-            # 3) Consider bases present on all connectors
-            required = set(temp_connectors.keys())
-            candidate_bases = [b for b, m in base_to_pair.items() if required.issubset(m.keys())]
-            self.logger().info(f"[dynamic-topk] Candidate bases: {len(candidate_bases)}")
-
-            # 4) Evaluate profitability for each base for both trade directions
+            # 3) 遍历每个base，然后遍历每两个支持的connector
             results = []
-            for base in candidate_bases:
-                name_list = list(required)
-                c1, c2 = name_list[0], name_list[1]
-                p1 = base_to_pair[base][c1]
-                p2 = base_to_pair[base][c2]
-                try:
-                    # Prices
-                    price_1 = Decimal(str(await temp_connectors[c1]._get_last_traded_price(p1)))
-                    price_2 = Decimal(str(await temp_connectors[c2]._get_last_traded_price(p2)))
+            num_base_scanned = 0
+            num_total_base = len(base_to_pair)
+            for base, conn_pair_map in base_to_pair.items():
+                num_base_scanned += 1
+                if num_base_scanned % 100 == 0:
+                    self.logger().info(f"[dynamic-topk] Scanning base {base} ({num_base_scanned}/{num_total_base})")
+                conn_names = list(conn_pair_map.keys())
+                for i in range(len(conn_names)):
+                    for j in range(len(conn_names)):
+                        if i == j:
+                            continue
+                        c1, c2 = conn_names[i], conn_names[j]
+                        p1 = conn_pair_map[c1]
+                        p2 = conn_pair_map[c2]
+                        try:
+                            # Prices
+                            price_1 = Decimal(str(await temp_connectors[c1]._get_last_traded_price(p1)))
+                            price_2 = Decimal(str(await temp_connectors[c2]._get_last_traded_price(p2)))
 
-                    # Funding
-                    f1 = await temp_connectors[c1]._orderbook_ds.get_funding_info(p1)
-                    f2 = await temp_connectors[c2]._orderbook_ds.get_funding_info(p2)
+                            # Funding
+                            f1 = await temp_connectors[c1]._orderbook_ds.get_funding_info(p1)
+                            f2 = await temp_connectors[c2]._orderbook_ds.get_funding_info(p2)
 
-                    # Fees (taker, market, open)
-                    amt_1 = self.config.position_size_quote / price_1 if price_1 > 0 else Decimal("0")
-                    amt_2 = self.config.position_size_quote / price_2 if price_2 > 0 else Decimal("0")
-                    fee_1 = temp_connectors[c1].get_fee(
-                        base_currency=base, quote_currency=p1.split("-")[1], order_type=OrderType.MARKET,
-                        order_side=TradeType.BUY, amount=amt_1, price=price_1, is_maker=False,
-                        position_action=PositionAction.OPEN).percent
-                    fee_2 = temp_connectors[c2].get_fee(
-                        base_currency=base, quote_currency=p2.split("-")[1], order_type=OrderType.MARKET,
-                        order_side=TradeType.BUY, amount=amt_2, price=price_2, is_maker=False,
-                        position_action=PositionAction.OPEN).percent
+                            # Fees (taker, market, open)
+                            amt_1 = self.config.position_size_quote / price_1 if price_1 > 0 else Decimal("0")
+                            amt_2 = self.config.position_size_quote / price_2 if price_2 > 0 else Decimal("0")
+                            fee_1 = temp_connectors[c1].get_fee(
+                                base_currency=base, quote_currency=p1.split("-")[1], order_type=OrderType.MARKET,
+                                order_side=TradeType.BUY, amount=amt_1, price=price_1, is_maker=False,
+                                position_action=PositionAction.OPEN).percent
+                            fee_2 = temp_connectors[c2].get_fee(
+                                base_currency=base, quote_currency=p2.split("-")[1], order_type=OrderType.MARKET,
+                                order_side=TradeType.BUY, amount=amt_2, price=price_2, is_maker=False,
+                                position_action=PositionAction.OPEN).percent
 
-                    # Direction A: BUY on c1, SELL on c2
-                    price_profit_a = (price_2 - price_1) / price_1
-                    funding_profit_a = f2.rate - f1.rate
-                    trade_profit_a = price_profit_a + funding_profit_a - fee_1 * 2 - fee_2 * 2
+                            # Direction: BUY on c1, SELL on c2
+                            price_profit = (price_2 - price_1) / price_1
+                            funding_profit = f2.rate - f1.rate
+                            trade_profit = price_profit + funding_profit - fee_1 * 2 - fee_2 * 2
 
-                    # Direction B: BUY on c2, SELL on c1
-                    price_profit_b = (price_1 - price_2) / price_2
-                    funding_profit_b = f1.rate - f2.rate
-                    trade_profit_b = price_profit_b + funding_profit_b - fee_1 * 2 - fee_2 * 2
-
-                    if trade_profit_a >= trade_profit_b:
-                        results.append({
-                            "base": base, "buy": c1, "sell": c2, "p_buy": p1, "p_sell": p2,
-                            "profit": trade_profit_a, "rates": (f1.rate, f2.rate), "prices": (price_1, price_2),
-                            "fees": (fee_1, fee_2)
-                        })
-                    else:
-                        results.append({
-                            "base": base, "buy": c2, "sell": c1, "p_buy": p2, "p_sell": p1,
-                            "profit": trade_profit_b, "rates": (f2.rate, f1.rate), "prices": (price_2, price_1),
-                            "fees": (fee_2, fee_1)
-                        })
-                except Exception as e:
-                    self.logger().debug(f"[dynamic-topk] Skip {base} due to error: {e}")
+                            if funding_profit >= self.config.min_funding_profitability:
+                                results.append({
+                                    "base": base, "buy": c1, "sell": c2, "p_buy": p1, "p_sell": p2,
+                                    "profit": trade_profit, "rates": (f1.rate, f2.rate), "prices": (price_1, price_2),
+                                    "fees": (fee_1, fee_2)
+                                })
+                        except Exception as e:
+                            self.logger().debug(f"[dynamic-topk] Skip {base} ({c1}->{c2}) due to error: {e}")
 
             # Sort and take Top-K
             results.sort(key=lambda x: float(x["profit"]), reverse=True)
@@ -706,6 +707,20 @@ class FundingRateArbitrage(StrategyV2Base):
 
         topk = await core.with_temp_connectors(connector_names, _do_scan)
         self._latest_topk_debug = topk
+        for entry in topk:
+            profit_str = self.format_percent(entry["profit"])
+            rates_str = f"({self.format_percent(entry['rates'][0])}, {self.format_percent(entry['rates'][1])})"
+            prices_str = f"({entry['prices'][0]:.7f}, {entry['prices'][1]:.7f})"
+            fees_str = f"({self.format_percent(entry['fees'][0])}, {self.format_percent(entry['fees'][1])})"
+            self.logger().info(
+                f"[dynamic-topk] Base: {entry['base']} | "
+                f"Buy:{entry['buy']} | "
+                f"Sell:{entry['sell']} | "
+                f"Profit:{profit_str} | "
+                f"Rates:{rates_str} | "
+                f"Prices:{prices_str} | "
+                f"Fees:{fees_str}"
+            )
         bases = [r["base"] for r in topk]
         self._dynamic_topk_tokens = set(bases)
         self.logger().info("[dynamic-topk] TopK bases: " + ",".join(bases))
@@ -728,12 +743,14 @@ class FundingRateArbitrage(StrategyV2Base):
 
         # Refresh strategy connector references to the newly created instances
         try:
-            self.connectors = core.get_connectors_map()
+            self.ready_to_trade = False
+            # self.connectors = core.get_connectors_map()
             self.logger().info("[dynamic-topk] Strategy connectors map refreshed after reinit.")
         except Exception as e:
             self.logger().warning(f"[dynamic-topk] Failed to refresh connectors map: {e}")
         # Re-apply leverage & position mode for new pairs
         self.apply_initial_setting()
+        # Are there more things to do here?
 
     async def _dynamic_scan_loop(self):
         """
@@ -756,8 +773,16 @@ class FundingRateArbitrage(StrategyV2Base):
                 #     self.logger().debug(f"[dynamic-topk] Skipping hour {hour}, not interval boundary.")
                 #     continue
 
+                if len(self.active_funding_arbitrages) > 0:
+                    self.logger().debug(f"[dynamic-topk] Skipping REST scan because there are active arbitrages")
+                    self.is_stopping_creating_actions = True
+                    continue
+
                 self.logger().info("[dynamic-topk] Triggering REST scan")
                 await self._compute_topk_via_rest()
+                self.logger().info("[dynamic-topk] REST scan completed")
+                self.is_stopping_creating_actions = False # reset
+
             except asyncio.CancelledError:
                 self.logger().info("[dynamic-topk] Scanner task cancelled.")
                 break

@@ -300,8 +300,8 @@ class OrderBookTracker:
                     # Print past diffs window summary (size, head/tail update_ids)
                     try:
                         past_len = len(past_diffs)
-                        head_ids = [(d.update_id, d.bids, d.asks) for d in past_diffs[:5]]
-                        tail_ids = [(d.update_id, d.bids, d.asks) for d in past_diffs[-5:]] if past_len >= 5 else [(d.update_id, d.bids, d.asks) for d in past_diffs]
+                        head_ids = [(d.update_id,) for d in past_diffs[:5]]
+                        tail_ids = [(d.update_id,) for d in past_diffs[-5:]] if past_len >= 5 else [(d.update_id,) for d in past_diffs]
                         debug_log += f"past_diffs_window(size={past_len}, head={head_ids}, tail={tail_ids}), "
                     except Exception:
                         pass
