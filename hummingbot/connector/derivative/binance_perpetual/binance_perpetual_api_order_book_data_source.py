@@ -99,7 +99,7 @@ class BinancePerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         """
         try:
             stream_id_channel_pairs = [
-                (CONSTANTS.DIFF_STREAM_ID, "@depth"),
+                (CONSTANTS.DIFF_STREAM_ID, "@depth20@100ms"),
                 (CONSTANTS.TRADE_STREAM_ID, "@aggTrade"),
                 (CONSTANTS.FUNDING_INFO_STREAM_ID, "@markPrice"),
             ]
