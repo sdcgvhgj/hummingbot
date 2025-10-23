@@ -836,16 +836,22 @@ class BybitPerpetualDerivative(PerpetualDerivativePyBase):
 
         params = {
             "type": "SETTLEMENT",
+            "accountType": "UNIFIED",
+            "baseCoin": trading_pair.split("-")[0],
+            "currency": trading_pair.split("-")[1],
         }
         if bybit_utils.is_linear_perpetual(trading_pair):
             params["category"] = "linear"
+        # self.logger().debug(f"Fetching last funding rate for {trading_pair} with params {params}")
         raw_response: Dict[str, Any] = await self._api_get(
             path_url=CONSTANTS.GET_LAST_FUNDING_RATE_PATH_URL,
             params=params,
             is_auth_required=True,
             trading_pair=trading_pair
         )
+        # self.logger().debug(f"Raw response: {raw_response}")
         data: Dict[str, Any] = raw_response["result"]["list"]
+        # self.logger().debug(f"Data: {data}")
 
         if not data:
             # An empty funding fee/payment is retrieved.
@@ -857,7 +863,8 @@ class BybitPerpetualDerivative(PerpetualDerivativePyBase):
             position_size: Decimal = Decimal(str(last_data["size"]))
             funding_rate: Decimal = payment / position_size
             timestamp: int = int(last_data["transactionTime"]) / 1e3
-            self.logger().debug(f"Bybit funding payment for {trading_pair} at {timestamp} with payment {payment}, funding rate {funding_rate}, position size {position_size}")
+            symbol: str = last_data["symbol"]
+            self.logger().debug(f"Bybit funding payment for {symbol} at {timestamp} with payment {payment}, funding rate {funding_rate}, position size {position_size}")
 
         return timestamp, funding_rate, payment
 

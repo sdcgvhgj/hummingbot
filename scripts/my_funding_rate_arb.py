@@ -726,7 +726,7 @@ class FundingRateArbitrage(StrategyV2Base):
         self.logger().info("[dynamic-topk] TopK bases: " + ",".join(bases))
 
         # Build target markets list per connector
-        target: Dict[str, List[str]] = {name: [] for name in self.connectors.keys()}
+        target: Dict[str, List[str]] = {name: [] for name in self.config.connectors}
         for r in topk:
             target[r["buy"]].append(r["p_buy"])
             target[r["sell"]].append(r["p_sell"])
@@ -774,9 +774,9 @@ class FundingRateArbitrage(StrategyV2Base):
                         self.logger().debug(f"[dynamic-topk] Skipping hour {hour}, not interval boundary.")
                         continue
 
+                self.is_stopping_creating_actions = True
                 if len(self.active_funding_arbitrages) > 0:
                     self.logger().debug(f"[dynamic-topk] Skipping REST scan because there are active arbitrages...")
-                    self.is_stopping_creating_actions = True
                     continue
 
                 is_first_scan = False
