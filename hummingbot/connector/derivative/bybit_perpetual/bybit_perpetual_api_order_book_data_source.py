@@ -284,7 +284,9 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         bids, asks = self._get_bids_and_asks_from_rest_msg_data(snapshot_data)
         order_book_message_content = {
             "trading_pair": trading_pair,
-            "update_id": update_id,
+            # do not use update_id from REST snapshot due to update_id inconsistency with WS snapshots
+            # this function is only used to emit the first snapshot message
+            "update_id": 0,
             "bids": bids,
             "asks": asks,
         }
@@ -295,6 +297,11 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         )
 
         return snapshot_msg
+
+    async def listen_for_order_book_snapshots(self, ev_loop: asyncio.AbstractEventLoop, output: asyncio.Queue):
+        # do not request REST order book snapshots due to update_id inconsistency with WS snapshots
+        self.logger().debug("BybitPerpetual API OrderBookDataSource: do not request REST order book snapshots")
+        pass
 
     async def _request_order_book_snapshot(self, trading_pair: str) -> Dict[str, Any]:
         params = {

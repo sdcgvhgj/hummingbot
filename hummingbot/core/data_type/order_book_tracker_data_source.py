@@ -65,6 +65,7 @@ class OrderBookTrackerDataSource(metaclass=ABCMeta):
         """
         snapshot_msg: OrderBookMessage = await self._order_book_snapshot(trading_pair=trading_pair)
         order_book: OrderBook = self.order_book_create_function()
+        self.logger().debug(f"apply first snapshot for {trading_pair}, update_id: {snapshot_msg.update_id}")
         order_book.apply_snapshot(snapshot_msg.bids, snapshot_msg.asks, snapshot_msg.update_id)
         return order_book
 
