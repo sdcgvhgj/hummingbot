@@ -714,11 +714,14 @@ class TradingCore:
         existing_names = set(self.connector_manager.connectors.keys())
         target_names = set(name for name, _ in market_names)
 
-        # Remove only those we will recreate (keep unrelated ones intact)
+        if self.markets_recorder:
+            self.markets_recorder.stop()
         for name in existing_names:
             try:
                 self.logger().info(f"[dynamic-ws] Removing connector: {name}")
                 self.remove_connector(name)
+                if self.markets_recorder:
+                    self.markets_recorder.remove_market(name)
             except Exception as e:
                 self.logger().error(f"[dynamic-ws] Error removing connector {name}: {e}")
 
