@@ -398,10 +398,12 @@ class FundingRateArbitrage(StrategyV2Base):
             keep_holding_condition = keep_holding_condition or (self.config.min_funding_profitability > 0 and len(funding_arbitrage_info["funding_payments"]) < 2)
             if take_profit_condition and keep_holding_condition:
                 self.logger().info("TP reached but holding")
-            take_profit_condition = take_profit_condition and not keep_holding_condition
+            # do not use keep_holding_condition for now
+            # take_profit_condition = take_profit_condition and not keep_holding_condition
+
             # TODO strengthen stop_loss_condition
             stop_loss_condition = len(funding_arbitrage_info["funding_payments"]) > 1 \
-                                and rate_2 - rate_1 < self.config.min_funding_profitability
+                                and c_price_2 - c_price_1 < 0
             if take_profit_condition:
                 self.logger().info(f"Take profit profitability reached for {token}, stopping executors, "
                                    f"{executors_pnl_by_hand=:.4%}, "
