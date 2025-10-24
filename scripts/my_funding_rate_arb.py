@@ -233,6 +233,10 @@ class FundingRateArbitrage(StrategyV2Base):
         for connector_1 in valid_connectors:
             for connector_2 in valid_connectors:
                 if connector_1 != connector_2:
+                    time_to_funding_1 = funding_info_report[connector_1].next_funding_utc_timestamp - self.current_timestamp
+                    time_to_funding_2 = funding_info_report[connector_2].next_funding_utc_timestamp - self.current_timestamp
+                    if abs(time_to_funding_1 - time_to_funding_2) > 60:
+                        continue
                     price_1, fee_1 = self.get_price_and_fee_with_cache(prices_and_fees_cache, connector_1, token, TradeType.BUY)
                     price_2, fee_2 = self.get_price_and_fee_with_cache(prices_and_fees_cache, connector_2, token, TradeType.SELL)
                     rate_1 = funding_info_report[connector_1].rate
@@ -676,6 +680,11 @@ class FundingRateArbitrage(StrategyV2Base):
                             f1 = await temp_connectors[c1]._orderbook_ds.get_funding_info(p1)
                             f2 = await temp_connectors[c2]._orderbook_ds.get_funding_info(p2)
 
+                            t1 = f1.next_funding_utc_timestamp
+                            t2 = f2.next_funding_utc_timestamp
+                            if abs(t1 - t2) > 60:
+                                continue
+
                             # Fees (taker, market, open)
                             amt_1 = self.config.position_size_quote / price_1 if price_1 > 0 else Decimal("0")
                             amt_2 = self.config.position_size_quote / price_2 if price_2 > 0 else Decimal("0")
@@ -779,6 +788,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 self.is_stopping_creating_actions = True
                 if len(self.active_funding_arbitrages) > 0:
                     self.logger().debug(f"[dynamic-topk] Skipping REST scan because there are active arbitrages...")
+                    await asyncio.sleep(5)
                     continue
 
                 is_first_scan = False

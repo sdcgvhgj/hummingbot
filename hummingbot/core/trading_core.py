@@ -738,7 +738,17 @@ class TradingCore:
                 self.logger().error(f"[dynamic-ws] Error creating connector {name}: {e}")
         
         strategy_ref.connectors = self.get_connectors_map()
-        strategy_ref.market_data_provider = MarketDataProvider(strategy_ref.connectors)
+        # Stop and replace previous MarketDataProvider to avoid leaking background tasks
+        try:
+            old_mdp = getattr(strategy_ref, "market_data_provider", None)
+            strategy_ref.market_data_provider = MarketDataProvider(strategy_ref.connectors)
+            if old_mdp is not None:
+                try:
+                    old_mdp.stop()
+                except Exception:
+                    pass
+        except Exception as e:
+            self.logger().warning(f"[dynamic-ws] Failed to refresh MarketDataProvider cleanly: {e}")
         strategy_ref.add_markets(list(strategy_ref.connectors.values()))
         strategy_ref.ready_to_trade = False
 
