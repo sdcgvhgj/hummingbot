@@ -2,6 +2,7 @@ import asyncio
 from abc import ABC, abstractmethod
 from decimal import Decimal
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from datetime import datetime
 
 from hummingbot.connector.constants import s_decimal_0, s_decimal_NaN
 from hummingbot.connector.derivative.perpetual_budget_checker import PerpetualBudgetChecker
@@ -376,6 +377,13 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
     async def _update_funding_info(self):
         for trading_pair in self.trading_pairs:
             new_funding_info = await self._orderbook_ds.get_funding_info(trading_pair)
+            pretty_time = datetime.utcfromtimestamp(new_funding_info.next_funding_utc_timestamp).strftime('%Y-%m-%d %H:%M:%S UTC')
+            self.logger().debug(
+                f"[funding info REST] updated for {trading_pair} on domain {self._domain}: "
+                f"rate={new_funding_info.rate:.10f}, "
+                f"next_funding_utc_timestamp={new_funding_info.next_funding_utc_timestamp} ({pretty_time}), "
+                f"mark_price={new_funding_info.mark_price:.10f}"
+            )
             funding_info = self._perpetual_trading._funding_info[trading_pair]
             funding_info.update(FundingInfoUpdate(
                 trading_pair=trading_pair,
@@ -388,6 +396,13 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
     async def _init_funding_info(self):
         for trading_pair in self.trading_pairs:
             funding_info = await self._orderbook_ds.get_funding_info(trading_pair)
+            pretty_time = datetime.utcfromtimestamp(funding_info.next_funding_utc_timestamp).strftime('%Y-%m-%d %H:%M:%S UTC')
+            self.logger().debug(
+                f"[funding info REST] initialized for {trading_pair} on domain {self._domain}: "
+                f"rate={funding_info.rate:.10f}, "
+                f"next_funding_utc_timestamp={funding_info.next_funding_utc_timestamp} ({pretty_time}), "
+                f"mark_price={funding_info.mark_price:.10f}"
+            )
             self._perpetual_trading.initialize_funding_info(funding_info)
 
     async def _funding_payment_polling_loop(self):
