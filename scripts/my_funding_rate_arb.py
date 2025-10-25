@@ -910,6 +910,7 @@ class FundingRateArbitrage(StrategyV2Base):
             num_base_scanned = 0
             num_total_base = len(base_to_pair)
             for base, conn_pair_map in base_to_pair.items():
+                await asyncio.sleep(1)
                 num_base_scanned += 1
                 if num_base_scanned % 100 == 0:
                     self.logger().info(f"[dynamic-topk] Scanning base {base} ({num_base_scanned}/{num_total_base})")
