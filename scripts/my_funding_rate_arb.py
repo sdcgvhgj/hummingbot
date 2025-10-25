@@ -1,4 +1,5 @@
 import os
+import asyncio
 from decimal import Decimal
 from typing import Dict, List, Set
 from datetime import datetime, timedelta
@@ -400,7 +401,6 @@ class FundingRateArbitrage(StrategyV2Base):
         # Kick off dynamic scanner if enabled
         if getattr(self.config, "dynamic_topk_enabled", False):
             try:
-                import asyncio
                 if self._dynamic_scan_task is None or self._dynamic_scan_task.done():
                     self.logger().info("[dynamic-topk] Starting background scanner loop...")
                     self._dynamic_scan_task = asyncio.create_task(self._dynamic_scan_loop())
@@ -1014,7 +1014,6 @@ class FundingRateArbitrage(StrategyV2Base):
         Background loop to periodically scan all symbols via REST, select Top-K by expected profitability,
         and refresh WS subscriptions by rebuilding connectors through TradingCore.
         """
-        import asyncio
         from datetime import datetime, timedelta
         self.logger().info(f"[dynamic-topk] Scanner loop initialized: every {self.config.scan_interval_hours}h on the hour.")
         is_first_scan = True

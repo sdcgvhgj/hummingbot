@@ -316,6 +316,8 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
             await self._execute_set_position_mode_for_pairs(
                 mode=self._perpetual_trading.position_mode, trading_pairs=successful_pairs
             )
+            self.logger().error(f"Error switching {successful_pairs} mode to {mode}: {msg}")
+            self._perpetual_trading.set_position_mode(mode)
             for trading_pair in self.trading_pairs:
                 self.trigger_event(
                     AccountEvent.PositionModeChangeFailed,
