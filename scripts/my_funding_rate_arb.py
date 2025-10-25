@@ -22,6 +22,218 @@ from hummingbot.core.trading_core import TradingCore
 
 COOL_DOWN_COUNT = 60 * 60 * 24
 
+# ------------------------
+# Lightweight process-wide memory snapshot monitor
+# - Uses stdlib tracemalloc for allocation snapshots (low overhead)
+# - Optionally uses psutil/Pympler if available (best-effort)
+# - Supports periodic snapshots, RSS growth threshold triggers, and SIGUSR1 manual dump
+# Dumps go to logs/mem/*.log
+# ------------------------
+try:
+    import tracemalloc  # stdlib
+    _HAS_TRACEMALLOC = True
+except Exception:
+    _HAS_TRACEMALLOC = False
+
+import threading
+import gc
+import sys
+import re
+from pathlib import Path
+
+try:
+    import signal  # not always available on Windows, fine on Linux/WSL2
+    _HAS_SIGNAL = True
+except Exception:
+    _HAS_SIGNAL = False
+
+try:
+    import psutil  # optional
+    _HAS_PSUTIL = True
+except Exception:
+    _HAS_PSUTIL = False
+
+try:
+    # Optional deep object summary
+    from pympler import muppy, summary, asizeof  # type: ignore
+    _HAS_PYMPLER = True
+except Exception:
+    _HAS_PYMPLER = False
+
+
+class _MemoryMonitor:
+    def __init__(self, logger, dump_dir: str = None, interval_sec: int = 60, topn: int = 30,
+                 rss_threshold_mb: int = 0):
+        self._logger = logger
+        self._interval_sec = max(1, int(interval_sec))
+        self._topn = max(5, int(topn))
+        self._rss_threshold_bytes = int(rss_threshold_mb) * 1024 * 1024 if rss_threshold_mb else 0
+        self._dump_dir = Path(dump_dir or (Path.cwd() / "logs" / "mem"))
+        self._dump_dir.mkdir(parents=True, exist_ok=True)
+        self._thread = None
+        self._stop = threading.Event()
+        self._last_rss = 0
+        self._last_snapshot = None
+        self._tracemalloc_started = False
+
+    def start(self):
+        if not _HAS_TRACEMALLOC:
+            self._logger().warning("[mem] tracemalloc unavailable; memory snapshots disabled")
+            return
+        try:
+            if not self._tracemalloc_started:
+                # Keep up to 25 frames for better grouping; adjust if overhead is a concern
+                tracemalloc.start(25)
+                self._tracemalloc_started = True
+        except Exception as e:
+            self._logger().warning(f"[mem] Failed to start tracemalloc: {e}")
+            return
+
+        # Try to install a SIGUSR1 handler for manual dumps (best-effort)
+        if _HAS_SIGNAL:
+            try:
+                signal.signal(signal.SIGUSR1, self._handle_sigusr1)
+            except Exception:
+                # Not in main thread or not supported
+                pass
+
+        self._thread = threading.Thread(target=self._run_loop, name="MemoryMonitor", daemon=True)
+        self._thread.start()
+        self._logger().info("[mem] Memory monitor started")
+
+    def stop(self):
+        try:
+            self._stop.set()
+        except Exception:
+            pass
+
+    def _handle_sigusr1(self, signum, frame):
+        try:
+            self._dump_snapshot(reason="signal")
+        except Exception as e:
+            self._logger().warning(f"[mem] SIGUSR1 dump failed: {e}")
+
+    def _current_rss(self) -> int:
+        if _HAS_PSUTIL:
+            try:
+                return psutil.Process().memory_info().rss
+            except Exception:
+                pass
+        # Fallback: Linux /proc/self/status VmRSS
+        try:
+            with open("/proc/self/status", "r") as f:
+                text = f.read()
+            m = re.search(r"VmRSS:\\s+(\\d+)\\s+kB", text)
+            if m:
+                return int(m.group(1)) * 1024
+        except Exception:
+            pass
+        # Last resort: return 0 if unknown
+        return 0
+
+    def _run_loop(self):
+        # Initial baseline
+        self._last_rss = self._current_rss()
+        while not self._stop.is_set():
+            try:
+                # Periodic dump
+                self._dump_snapshot(reason="interval")
+
+                # Threshold check
+                if self._rss_threshold_bytes:
+                    cur_rss = self._current_rss()
+                    if self._last_rss and cur_rss - self._last_rss >= self._rss_threshold_bytes:
+                        self._dump_snapshot(reason=f"rss+{(cur_rss - self._last_rss) / (1024*1024):.1f}MB")
+                        self._last_rss = cur_rss
+            except Exception as e:
+                self._logger().warning(f"[mem] monitor loop error: {e}")
+            finally:
+                self._stop.wait(self._interval_sec)
+
+    def _dump_snapshot(self, reason: str):
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        path = self._dump_dir / f"memsnap_{ts}_{reason}.log"
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(f"# Memory snapshot @ {ts} UTC (reason={reason})\n")
+
+                # RSS
+                rss = self._current_rss()
+                if rss:
+                    fh.write(f"RSS: {rss/ (1024*1024):.2f} MB\n")
+
+                # tracemalloc stats
+                if _HAS_TRACEMALLOC:
+                    current, peak = tracemalloc.get_traced_memory()
+                    fh.write(f"tracemalloc current: {current/(1024*1024):.2f} MB, peak: {peak/(1024*1024):.2f} MB\n")
+                    snap = tracemalloc.take_snapshot()
+                    top_lines = snap.statistics('lineno')[: self._topn]
+                    fh.write("\nTop allocations by line (tracemalloc):\n")
+                    for i, stat in enumerate(top_lines, 1):
+                        fh.write(f"{i:2d}. {stat.traceback.format()[-1].strip()} | size={stat.size/1024:.1f} KiB | count={stat.count}\n")
+
+                    # Diff with previous snapshot (where growing?)
+                    if self._last_snapshot is not None:
+                        fh.write("\nDiff since last snapshot (by line):\n")
+                        for i, stat in enumerate(snap.compare_to(self._last_snapshot, 'lineno')[: self._topn], 1):
+                            sign = "+" if stat.size_diff >= 0 else "-"
+                            tb = stat.traceback.format()[-1].strip() if stat.traceback else "<unknown>"
+                            fh.write(f"{i:2d}. {tb} | d_size={sign}{abs(stat.size_diff)/1024:.1f} KiB | d_count={stat.count_diff}\n")
+                    self._last_snapshot = snap
+
+                # Object type summary (Pympler if available)
+                fh.write("\nObject summary by type:\n")
+                if _HAS_PYMPLER:
+                    try:
+                        all_objs = muppy.get_objects()
+                        sum1 = summary.summarize(all_objs)
+                        summary.print_(sum1, stream=fh)
+                    except Exception as e:
+                        fh.write(f"<pympler failed: {e}>\n")
+                else:
+                    # Fallback: approximate counts from gc
+                    try:
+                        counts = {}
+                        for o in gc.get_objects():
+                            t = type(o).__name__
+                            counts[t] = counts.get(t, 0) + 1
+                        top_types = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[: self._topn]
+                        for t, c in top_types:
+                            fh.write(f"{t}: {c}\n")
+                    except Exception as e:
+                        fh.write(f"<gc summary failed: {e}>\n")
+
+                # Heaviest containers (shallow) to guess "which variables"
+                fh.write("\nLargest containers (shallow, best-effort):\n")
+                try:
+                    import builtins
+                    sized = []
+                    for o in gc.get_objects():
+                        try:
+                            t = type(o)
+                            if t in (list, dict, set, tuple):
+                                size = sys.getsizeof(o)
+                                ln = len(o) if hasattr(o, '__len__') else 0
+                                mod = getattr(t, '__module__', '')
+                                sized.append((size, ln, t.__name__, mod, o))
+                        except Exception:
+                            continue
+                    sized.sort(key=lambda x: x[0], reverse=True)
+                    for i, (size, ln, tname, mod, o) in enumerate(sized[: self._topn], 1):
+                        preview = None
+                        try:
+                            r = repr(list(o)[:3]) if isinstance(o, (list, tuple, set)) else repr(list(o.items())[:3]) if isinstance(o, dict) else repr(o)
+                            preview = (r[:120] + '...') if len(r) > 120 else r
+                        except Exception:
+                            preview = '<unrepr>'
+                        fh.write(f"{i:2d}. {tname} len={ln} shallow={size/1024:.1f} KiB mod={mod} sample={preview}\n")
+                except Exception as e:
+                    fh.write(f"<largest containers failed: {e}>\n")
+
+            self._logger().info(f"[mem] snapshot written: {path}")
+        except Exception as e:
+            self._logger().warning(f"[mem] failed to write snapshot: {e}")
+
 class FundingRateArbitrageConfig(StrategyV2ConfigBase):
     script_file_name: str = os.path.basename(__file__)
     candles_config: List[CandlesConfig] = []
@@ -91,6 +303,31 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Scan interval in hours (e.g. 12): ",
             "prompt_on_new": True}
     )
+    # Memory monitor controls
+    memory_monitor_enabled: bool = Field(
+        default=True,
+        json_schema_extra={
+            "prompt": lambda mi: "Enable memory monitor (true/false): ",
+            "prompt_on_new": True}
+    )
+    memory_snapshot_interval_sec: int = Field(
+        default=300,
+        json_schema_extra={
+            "prompt": lambda mi: "Memory snapshot interval seconds (e.g. 300): ",
+            "prompt_on_new": True}
+    )
+    memory_snapshot_topn: int = Field(
+        default=30,
+        json_schema_extra={
+            "prompt": lambda mi: "Memory snapshot top-N entries (e.g. 30): ",
+            "prompt_on_new": True}
+    )
+    memory_rss_threshold_mb: int = Field(
+        default=256,
+        json_schema_extra={
+            "prompt": lambda mi: "Trigger snapshot when RSS grows by MB (0=disable, e.g. 256): ",
+            "prompt_on_new": True}
+    )
 
     @field_validator("connectors", "tokens", mode="before")
     @classmethod
@@ -138,6 +375,7 @@ class FundingRateArbitrage(StrategyV2Base):
         self._dynamic_topk_tokens = set(self.config.tokens)
         self._latest_topk_debug = []
         self.is_stopping_creating_actions = False
+        self._mem_monitor = None
 
     def start(self, clock: Clock, timestamp: float) -> None:
         """
@@ -147,6 +385,18 @@ class FundingRateArbitrage(StrategyV2Base):
         """
         self._last_timestamp = timestamp
         self.apply_initial_setting()
+        # Start memory monitor (process-wide)
+        try:
+            if getattr(self.config, "memory_monitor_enabled", False):
+                self._mem_monitor = _MemoryMonitor(
+                    logger=self.logger,
+                    interval_sec=int(getattr(self.config, "memory_snapshot_interval_sec", 300)),
+                    topn=int(getattr(self.config, "memory_snapshot_topn", 30)),
+                    rss_threshold_mb=int(getattr(self.config, "memory_rss_threshold_mb", 256)),
+                )
+                self._mem_monitor.start()
+        except Exception as e:
+            self.logger().warning(f"[mem] Failed to start memory monitor: {e}")
         # Kick off dynamic scanner if enabled
         if getattr(self.config, "dynamic_topk_enabled", False):
             try:
