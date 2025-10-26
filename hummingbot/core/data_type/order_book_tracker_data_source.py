@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+import os
 from abc import ABCMeta, abstractmethod
 from collections import defaultdict
 from typing import Any, Callable, Dict, List, Optional
@@ -25,6 +26,17 @@ class OrderBookTrackerDataSource(metaclass=ABCMeta):
         self._trading_pairs: List[str] = trading_pairs
         self._order_book_create_function = lambda: OrderBook()
         self._message_queue: Dict[str, asyncio.Queue] = defaultdict(asyncio.Queue)
+
+        # Lightweight backlog diagnostics (disabled by default). Enable with HB_OB_QUEUE_MONITOR=1
+        self._monitor_enabled: bool = str(os.getenv("HB_OB_QUEUE_MONITOR", "0")).lower() in ("1", "true", "yes")
+        self._mon_last_log_ts: float = time.time()
+        self._mon_interval_sec: float = float(os.getenv("HB_OB_QUEUE_MONITOR_INTERVAL", "5"))
+        self._mon_counts: Dict[str, int] = {
+            self._trade_messages_queue_key: 0,
+            self._diff_messages_queue_key: 0,
+            self._snapshot_messages_queue_key: 0,
+            "unknown": 0,
+        }
 
     @classmethod
     def logger(cls) -> HummingbotLogger:
@@ -244,10 +256,13 @@ class OrderBookTrackerDataSource(metaclass=ABCMeta):
                 valid_channels = self._get_messages_queue_keys()
                 if channel in valid_channels:
                     self._message_queue[channel].put_nowait(data)
+                    self._record_enqueue(channel)
                 else:
+                    self._record_enqueue("unknown")
                     await self._process_message_for_unknown_channel(
                         event_message=data, websocket_assistant=websocket_assistant
                     )
+                self._maybe_log_queue_status()
 
     def _get_messages_queue_keys(self) -> List[str]:
         return [self._snapshot_messages_queue_key, self._diff_messages_queue_key, self._trade_messages_queue_key]
@@ -263,3 +278,52 @@ class OrderBookTrackerDataSource(metaclass=ABCMeta):
 
     def _time(self):
         return time.time()
+
+    # --------------------
+    # Backlog diagnostics helpers
+    # --------------------
+    def _record_enqueue(self, channel: str):
+        if not self._monitor_enabled:
+            return
+        try:
+            self._mon_counts[channel] = self._mon_counts.get(channel, 0) + 1
+        except Exception:
+            pass
+
+    def _maybe_log_queue_status(self):
+        if not self._monitor_enabled:
+            return
+        now = time.time()
+        if now - self._mon_last_log_ts < self._mon_interval_sec:
+            return
+        self._mon_last_log_ts = now
+
+        try:
+            # Queue sizes (length)
+            lens: Dict[str, int] = {}
+            for k in self._get_messages_queue_keys():
+                q = self._message_queue.get(k)
+                lens[k] = q.qsize() if q is not None else 0
+
+            # Rates since last log
+            counts = self._mon_counts
+            rate_trade = counts.get(self._trade_messages_queue_key, 0) / self._mon_interval_sec
+            rate_diff = counts.get(self._diff_messages_queue_key, 0) / self._mon_interval_sec
+            rate_snap = counts.get(self._snapshot_messages_queue_key, 0) / self._mon_interval_sec
+            rate_unknown = counts.get("unknown", 0) / self._mon_interval_sec
+
+            self.logger().info(
+                f"[ob-backlog] domain={self._domain} lens trade={lens.get(self._trade_messages_queue_key,0)} "
+                f"diff={lens.get(self._diff_messages_queue_key,0)} snap={lens.get(self._snapshot_messages_queue_key,0)} | "
+                f"rates t={rate_trade:.1f}/s d={rate_diff:.1f}/s s={rate_snap:.3f}/s u={rate_unknown:.3f}/s"
+            )
+
+            # reset window
+            self._mon_counts = {
+                self._trade_messages_queue_key: 0,
+                self._diff_messages_queue_key: 0,
+                self._snapshot_messages_queue_key: 0,
+                "unknown": 0,
+            }
+        except Exception:
+            pass
