@@ -84,7 +84,7 @@ class _MemoryMonitor:
         try:
             if not self._tracemalloc_started:
                 # Keep up to 25 frames for better grouping; adjust if overhead is a concern
-                tracemalloc.start(25)
+                tracemalloc.start(5)
                 self._tracemalloc_started = True
         except Exception as e:
             self._logger().warning(f"[mem] Failed to start tracemalloc: {e}")
@@ -168,18 +168,24 @@ class _MemoryMonitor:
                     current, peak = tracemalloc.get_traced_memory()
                     fh.write(f"tracemalloc current: {current/(1024*1024):.2f} MB, peak: {peak/(1024*1024):.2f} MB\n")
                     snap = tracemalloc.take_snapshot()
-                    top_lines = snap.statistics('lineno')[: self._topn]
+                    top_lines = snap.statistics('traceback')[: self._topn]
                     fh.write("\nTop allocations by line (tracemalloc):\n")
                     for i, stat in enumerate(top_lines, 1):
-                        fh.write(f"{i:2d}. {stat.traceback.format()[-1].strip()} | size={stat.size/1024:.1f} KiB | count={stat.count}\n")
+                        # fh.write(f"{i:2d}. {stat.traceback.format()[-1].strip()} | size={stat.size/1024:.1f} KiB | count={stat.count}\n")
+                        fh.write(f"{i:2d}. {stat}\n")
+                        for j, frame in enumerate(stat.traceback):
+                            fh.write(f"    [{j:2d}] {frame.filename}:{frame.lineno}\n")
 
                     # Diff with previous snapshot (where growing?)
                     if self._last_snapshot is not None:
                         fh.write("\nDiff since last snapshot (by line):\n")
-                        for i, stat in enumerate(snap.compare_to(self._last_snapshot, 'lineno')[: self._topn], 1):
-                            sign = "+" if stat.size_diff >= 0 else "-"
-                            tb = stat.traceback.format()[-1].strip() if stat.traceback else "<unknown>"
-                            fh.write(f"{i:2d}. {tb} | d_size={sign}{abs(stat.size_diff)/1024:.1f} KiB | d_count={stat.count_diff}\n")
+                        for i, stat in enumerate(snap.compare_to(self._last_snapshot, 'traceback')[: self._topn], 1):
+                            # sign = "+" if stat.size_diff >= 0 else "-"
+                            # tb = stat.traceback.format()[-1].strip() if stat.traceback else "<unknown>"
+                            # fh.write(f"{i:2d}. {tb} | d_size={sign}{abs(stat.size_diff)/1024:.1f} KiB | d_count={stat.count_diff}\n")
+                            fh.write(f"{i:2d}. {stat}\n")
+                            for j, frame in enumerate(stat.traceback):
+                                fh.write(f"    [{j:2d}] {frame.filename}:{frame.lineno}\n")
                     self._last_snapshot = snap
 
                 # Object type summary (Pympler if available)
@@ -216,18 +222,30 @@ class _MemoryMonitor:
                                 size = sys.getsizeof(o)
                                 ln = len(o) if hasattr(o, '__len__') else 0
                                 mod = getattr(t, '__module__', '')
-                                sized.append((size, ln, t.__name__, mod, o))
+                                # Attempt to retrieve o's variable name from globals or locals
+                                var_name = None
+                                try:
+                                    for scope in (globals(), locals()):
+                                        for k, v in scope.items():
+                                            if v is o:
+                                                var_name = k
+                                                break
+                                        if var_name:
+                                            break
+                                except Exception:
+                                    var_name = None
+                                sized.append((size, ln, t.__name__, mod, o, var_name))
                         except Exception:
                             continue
                     sized.sort(key=lambda x: x[0], reverse=True)
-                    for i, (size, ln, tname, mod, o) in enumerate(sized[: self._topn], 1):
+                    for i, (size, ln, tname, mod, o, var_name) in enumerate(sized[: self._topn], 1):
                         preview = None
                         try:
                             r = repr(list(o)[:3]) if isinstance(o, (list, tuple, set)) else repr(list(o.items())[:3]) if isinstance(o, dict) else repr(o)
                             preview = (r[:120] + '...') if len(r) > 120 else r
                         except Exception:
                             preview = '<unrepr>'
-                        fh.write(f"{i:2d}. {tname} len={ln} shallow={size/1024:.1f} KiB mod={mod} sample={preview}\n")
+                        fh.write(f"{i:2d}. {tname} len={ln} shallow={size/1024:.1f} KiB mod={mod} sample={preview} var_name={var_name}\n")
                 except Exception as e:
                     fh.write(f"<largest containers failed: {e}>\n")
 
@@ -391,8 +409,8 @@ class FundingRateArbitrage(StrategyV2Base):
             if getattr(self.config, "memory_monitor_enabled", False):
                 self._mem_monitor = _MemoryMonitor(
                     logger=self.logger,
-                    interval_sec=int(getattr(self.config, "memory_snapshot_interval_sec", 300)),
-                    topn=int(getattr(self.config, "memory_snapshot_topn", 30)),
+                    interval_sec=int(getattr(self.config, "memory_snapshot_interval_sec", 600)),
+                    topn=int(getattr(self.config, "memory_snapshot_topn", 10)),
                     rss_threshold_mb=int(getattr(self.config, "memory_rss_threshold_mb", 256)),
                 )
                 self._mem_monitor.start()
