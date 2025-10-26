@@ -46,6 +46,8 @@ class OrderBookTracker:
         self._order_book_trade_stream: asyncio.Queue = asyncio.Queue()
         self._ev_loop: asyncio.BaseEventLoop = asyncio.get_event_loop()
         self._saved_message_queues: Dict[str, Deque[OrderBookMessage]] = defaultdict(lambda: deque(maxlen=1000))
+        # Bounded per-pair routing queue to prevent unbounded growth
+        self._pair_queue_maxsize: int = int(os.getenv("HB_OB_PAIR_QUEUE_MAX", "2000"))
 
         self._emit_trade_event_task: Optional[asyncio.Task] = None
         self._init_order_books_task: Optional[asyncio.Task] = None
@@ -184,7 +186,7 @@ class OrderBookTracker:
         """
         for index, trading_pair in enumerate(self._trading_pairs):
             self._order_books[trading_pair] = await self._initial_order_book_for_trading_pair(trading_pair)
-            self._tracking_message_queues[trading_pair] = asyncio.Queue()
+            self._tracking_message_queues[trading_pair] = asyncio.Queue(maxsize=self._pair_queue_maxsize)
             self._tracking_tasks[trading_pair] = safe_ensure_future(self._track_single_book(trading_pair))
             self.logger().info(f"Initialized order book for {trading_pair}. "
                                f"{index + 1}/{len(self._trading_pairs)} completed.")
@@ -224,6 +226,12 @@ class OrderBookTracker:
                         pass
                     continue
                 await message_queue.put(ob_message)
+                # If queue is saturated, drop oldest to avoid unbounded growth
+                try:
+                    while message_queue.qsize() > self._pair_queue_maxsize:
+                        _ = message_queue.get_nowait()
+                except Exception:
+                    pass
                 messages_accepted += 1
 
                 # Log some statistics.

@@ -51,7 +51,8 @@ cdef class ConnectorBase(NetworkIterator):
         self._event_logger = EventLogger(event_source=self.display_name)
         for event_tag in self.MARKET_EVENTS:
             self.c_add_listener(event_tag.value, self._event_reporter)
-            self.c_add_listener(event_tag.value, self._event_logger)
+            # Disable EventLogger to avoid unbounded in-memory event accumulation
+            # self.c_add_listener(event_tag.value, self._event_logger)
 
         self._account_balances = {}  # Dict[asset_name:str, Decimal]
         self._account_available_balances = {}  # Dict[asset_name:str, Decimal]
