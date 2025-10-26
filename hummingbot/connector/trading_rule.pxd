@@ -13,3 +13,5 @@ cdef class TradingRule:
         public bint supports_market_orders             # if market order is allowed for this trading pair
         public object buy_order_collateral_token       # Indicates the collateral token used for buy orders
         public object sell_order_collateral_token      # Indicates the collateral token used for sell orders
+        public object perpetual_delisting_time_seconds # Delisting time in seconds
+        public object perpetual_funding_interval_seconds # Funding interval in seconds

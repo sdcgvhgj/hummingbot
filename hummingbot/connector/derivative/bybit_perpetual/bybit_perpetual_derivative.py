@@ -723,7 +723,13 @@ class BybitPerpetualDerivative(PerpetualDerivativePyBase):
                         min_base_amount_increment=Decimal(instrument["lotSizeFilter"]["qtyStep"]),
                         buy_order_collateral_token=collateral_token,
                         sell_order_collateral_token=collateral_token,
+                        perpetual_delisting_time_seconds=float(instrument["deliveryTime"])*1e-3,
+                        perpetual_funding_interval_seconds=float(instrument["fundingInterval"])*60,
                     )
+                    if int(instrument["deliveryTime"]) != 0:
+                        self.logger().debug(f"BybitPerp {trading_pair} in {name} is delisting: {instrument["deliveryTime"]}")
+                    if trading_rules[trading_pair].perpetual_delisting_time_seconds is not None and trading_rules[trading_pair].perpetual_delisting_time_seconds > 0:
+                        self.logger().debug(f"BybitPerp {trading_pair} in {name} is delisting: {trading_rules[trading_pair].perpetual_delisting_time_seconds}")
             except Exception:
                 self.logger().exception(f"Error parsing the trading pair rule: {instrument}. Skipping...")
         return list(trading_rules.values())

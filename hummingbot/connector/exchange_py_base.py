@@ -1109,11 +1109,11 @@ class ExchangePyBase(ExchangeBase, ABC):
         return exchange_info
 
     def _get_poll_interval(self, timestamp: float) -> float:
-        last_user_stream_message_time = (
-            0 if self._user_stream_tracker is None else self._user_stream_tracker.last_recv_time
-        )
-        last_recv_diff = timestamp - last_user_stream_message_time
-        poll_interval = (
-            self.SHORT_POLL_INTERVAL if last_recv_diff > self.TICK_INTERVAL_LIMIT else self.LONG_POLL_INTERVAL
-        )
-        return poll_interval
+        # last_user_stream_message_time = (
+        #     0 if self._user_stream_tracker is None else self._user_stream_tracker.last_recv_time
+        # )
+        # last_recv_diff = timestamp - last_user_stream_message_time
+        # poll_interval = (
+        #     self.SHORT_POLL_INTERVAL if last_recv_diff > self.TICK_INTERVAL_LIMIT else self.LONG_POLL_INTERVAL
+        # )
+        return self.SHORT_POLL_INTERVAL

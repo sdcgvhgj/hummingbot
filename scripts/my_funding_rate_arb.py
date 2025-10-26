@@ -637,6 +637,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 self.token_failure_cool_down[token] = TOKEN_FAILURE_COOL_DOWN_COUNT
                 stopped_tokens.append(token)
                 funding_arbitrage_info['stop_reason'] = "UNK"
+                funding_arbitrage_info['stop_time'] = self.current_timestamp
                 self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
                 stop_executor_actions.extend(self.create_stop_executor_action(executors))
                 continue
@@ -763,7 +764,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 funding_info_report = self.get_funding_info_by_token(token)
                 for connector_name, info in funding_info_report.items():
                     for funding_info in all_funding_info:
-                        if funding_info["connector"] == connector_name:
+                        if funding_info["Connector"] == connector_name:
                             funding_info[token] = self.format_percent(info.rate)
                             break
 
@@ -788,7 +789,7 @@ class FundingRateArbitrage(StrategyV2Base):
 
             funding_rate_status.append(f"\nMin Trade Profitability: {self.config.min_trade_profitability:.2%}")
 
-            balances_info = [{ "Currency": "Available USDT" }, { "Currency": "All USDT" }]
+            balances_info = [{ "Currency": "Avail USDT" }, { "Currency": "Total USDT" }]
             for connector_name in self.connectors.keys():
                 avail_usd = self.connectors[connector_name].available_balances.get(self.quote_markets_map.get(connector_name, 'USDT'), 0)
                 all_usd = self.connectors[connector_name].get_balance(self.quote_markets_map.get(connector_name, 'USDT'))
@@ -909,10 +910,10 @@ class FundingRateArbitrage(StrategyV2Base):
                     arbitrage_info['Fd Pnl'] = self.format_percent(funding_payments_pnl)
                     arbitrage_info['Td Pnl'] = self.format_percent(executors_pnl)
                     arbitrage_info['SR'] = funding_arbitrage_info['stop_reason']
-                    stop_time = datetime.utcfromtimestamp(funding_arbitrage_info['stop_time']).strftime('%Y-%m-%d %H:%M:%S UTC')
-                    arbitrage_info['Stop Time'] = stop_time
                     hold_time = self.format_time(funding_arbitrage_info['stop_time'] - funding_arbitrage_info['start_time'])
                     arbitrage_info['Hold Time'] = hold_time
+                    stop_time = datetime.utcfromtimestamp(funding_arbitrage_info['stop_time']).strftime('%Y-%m-%d %H:%M:%S UTC')
+                    arbitrage_info['Stop Time'] = stop_time
 
                     stopped_arbitrage_info.append(arbitrage_info)
             funding_rate_status.append( \
@@ -943,6 +944,10 @@ class FundingRateArbitrage(StrategyV2Base):
                     except Exception:
                         continue
                     if self.quote_markets_map.get(name, 'USDT') != quote:
+                        continue
+                    delisting_time = temp_connectors[name].trading_rules[pair].perpetual_delisting_time_seconds
+                    if delisting_time is not None and delisting_time > 0:
+                        self.logger().debug(f"[dynamic-topk] Skip {pair} in {name} due to delisting")
                         continue
                     d = base_to_pair.setdefault(base, {})
                     d[name] = pair
