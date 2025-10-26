@@ -128,6 +128,7 @@ class MarketsRecorder:
         self._market_data_collection_task = self._ev_loop.create_task(self._record_market_data())
 
     async def _record_market_data(self):
+        self.logger().info("Starting market data recording...")
         while True:
             try:
                 if all(ex.ready for ex in self._markets):

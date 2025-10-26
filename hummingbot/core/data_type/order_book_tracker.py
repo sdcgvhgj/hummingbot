@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+import os
 from collections import defaultdict, deque
 from enum import Enum
 from typing import Deque, Dict, List, Optional, Tuple
@@ -55,6 +56,11 @@ class OrderBookTracker:
         self._order_book_snapshot_router_task: Optional[asyncio.Task] = None
         self._update_last_trade_prices_task: Optional[asyncio.Task] = None
         self._order_book_stream_listener_task: Optional[asyncio.Task] = None
+
+        # Lightweight book size/backlog diagnostics (disabled by default)
+        self._size_mon_enabled: bool = str(os.getenv("HB_OB_SIZE_MONITOR", "0")).lower() in ("1", "true", "yes")
+        self._size_mon_interval: float = float(os.getenv("HB_OB_SIZE_MONITOR_INTERVAL", "30"))
+        self._size_mon_last_log: float = time.time()
 
     @property
     def data_source(self) -> OrderBookTrackerDataSource:
@@ -310,6 +316,8 @@ class OrderBookTracker:
                     after_ask = order_book.get_price(True)
                     debug_log += f"after-price=({after_bid:.5f},{after_ask:.5f})"
                     self.logger().debug(debug_log)
+                # Optional: periodically log book sizes and queues for this trading pair
+                self._maybe_log_book_sizes(trading_pair)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -368,3 +376,36 @@ class OrderBookTracker:
     @staticmethod
     async def _sleep(delay: float):
         await asyncio.sleep(delay=delay)
+
+    # --------------------
+    # Diagnostics helpers
+    # --------------------
+    def _maybe_log_book_sizes(self, trading_pair: str):
+        if not self._size_mon_enabled:
+            return
+        now = time.time()
+        if now - self._size_mon_last_log < self._size_mon_interval:
+            return
+        self._size_mon_last_log = now
+        try:
+            ob: OrderBook = self._order_books.get(trading_pair)
+            if ob is None:
+                return
+            # These calls traverse entries; keep only counts to limit overhead
+            try:
+                bid_count = sum(1 for _ in ob.bid_entries())
+            except Exception:
+                bid_count = -1
+            try:
+                ask_count = sum(1 for _ in ob.ask_entries())
+            except Exception:
+                ask_count = -1
+            qsize = self._tracking_message_queues.get(trading_pair).qsize() if trading_pair in self._tracking_message_queues else 0
+            saved_len = len(self._saved_message_queues.get(trading_pair, []))
+            past_len = len(self._past_diffs_windows.get(trading_pair, []))
+            self.logger().info(
+                f"[ob-size] domain={self._domain} pair={trading_pair} bids={bid_count} asks={ask_count} "
+                f"qsize={qsize} saved={saved_len} past_diffs={past_len}"
+            )
+        except Exception:
+            pass
