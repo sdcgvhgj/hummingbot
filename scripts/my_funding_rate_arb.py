@@ -22,7 +22,7 @@ from hummingbot.strategy_v2.models.executors_info import ExecutorInfo
 from hummingbot.core.trading_core import TradingCore
 
 TOKEN_FAILURE_COOL_DOWN_COUNT = 60 * 60 * 24
-CREATE_ACTION_COOL_DOWN_COUNT = 60
+CREATE_ACTION_COOL_DOWN_COUNT = 60 * 5 # 5 minutes
 
 # ------------------------
 # Lightweight process-wide memory snapshot monitor
@@ -1082,7 +1082,8 @@ class FundingRateArbitrage(StrategyV2Base):
                         self.logger().debug(f"[dynamic-topk] Skipping hour {hour}, not interval boundary.")
                         continue
 
-                self.is_stopping_creating_actions = True
+                # TODO: Uncomment this when we want to stop creating actions
+                # self.is_stopping_creating_actions = True
                 if len(self.active_funding_arbitrages) > 0:
                     self.logger().debug(f"[dynamic-topk] Skipping REST scan because there are active arbitrages...")
                     await asyncio.sleep(5)
