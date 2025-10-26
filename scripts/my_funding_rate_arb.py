@@ -21,7 +21,8 @@ from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction,
 from hummingbot.strategy_v2.models.executors_info import ExecutorInfo
 from hummingbot.core.trading_core import TradingCore
 
-COOL_DOWN_COUNT = 60 * 60 * 24
+TOKEN_FAILURE_COOL_DOWN_COUNT = 60 * 60 * 24
+CREATE_ACTION_COOL_DOWN_COUNT = 60
 
 # ------------------------
 # Lightweight process-wide memory snapshot monitor
@@ -390,6 +391,7 @@ class FundingRateArbitrage(StrategyV2Base):
         self.stopped_funding_arbitrages = {token: [] for token in self.config.tokens}
         self.tokens_supported_exchange_map = dict()
         self.token_failure_cool_down = {token: 0 for token in self.config.tokens}
+        self.create_action_cool_down = 0
         self._dynamic_scan_task = None
         self._dynamic_topk_tokens = set(self.config.tokens)
         self._latest_topk_debug = []
@@ -540,6 +542,10 @@ class FundingRateArbitrage(StrategyV2Base):
         at market to open the possibilities for other people to create variations like sending limit position executors
         and if one gets filled buy market the other one to improve the entry prices.
         """
+        self.create_action_cool_down -= 1
+        if self.create_action_cool_down > 0:
+            self.logger().debug(f"Create action cool down: {self.create_action_cool_down}")
+            return []
         create_actions = []
         for token in self.tokens_for_trading():
             if token not in self.active_funding_arbitrages:
@@ -591,6 +597,7 @@ class FundingRateArbitrage(StrategyV2Base):
                         "funding_payments": [],
                         "start_time": self.current_timestamp
                     }
+                    self.create_action_cool_down = CREATE_ACTION_COOL_DOWN_COUNT
                     return [CreateExecutorAction(executor_config=position_executor_config_1),
                             CreateExecutorAction(executor_config=position_executor_config_2)]
         return create_actions
@@ -627,7 +634,7 @@ class FundingRateArbitrage(StrategyV2Base):
             if len(closed_ex) > 0:
                 self.logger().warning(f"Closed executor for {token} found due to "
                                       f"{','.join([close.name for close in closed_ex])}, stopping executors")
-                self.token_failure_cool_down[token] = COOL_DOWN_COUNT
+                self.token_failure_cool_down[token] = TOKEN_FAILURE_COOL_DOWN_COUNT
                 stopped_tokens.append(token)
                 funding_arbitrage_info['stop_reason'] = "UNK"
                 self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
@@ -682,12 +689,14 @@ class FundingRateArbitrage(StrategyV2Base):
                                    f"{funding_payments_pnl_pct=:.4%}")
                 stopped_tokens.append(token)
                 funding_arbitrage_info['stop_reason'] = "TP"
+                funding_arbitrage_info['stop_time'] = self.current_timestamp
                 self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
                 stop_executor_actions.extend(self.create_stop_executor_action(executors, c_price_1, c_price_2))
             elif stop_loss_condition:
                 self.logger().info(f"Stop loss condition satisfied for {token}, stopping executors")
                 stopped_tokens.append(token)
                 funding_arbitrage_info['stop_reason'] = "SL"
+                funding_arbitrage_info['stop_time'] = self.current_timestamp
                 self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
                 stop_executor_actions.extend(self.create_stop_executor_action(executors, c_price_1, c_price_2))
         for token in stopped_tokens:
@@ -747,17 +756,18 @@ class FundingRateArbitrage(StrategyV2Base):
         original_status = super().format_status()
         funding_rate_status = []
         if self.ready_to_trade:
-            all_funding_info = []
+            all_funding_info = [ {"Connector": connector_name} for connector_name in self.connectors.keys() ]
             all_best_paths = []
             for token in self.tokens_for_trading():
                 
-                token_info = {"token": token}
                 funding_info_report = self.get_funding_info_by_token(token)
                 for connector_name, info in funding_info_report.items():
-                    token_info[f"{connector_name} Rate (%)"] = info.rate * 100
-                all_funding_info.append(token_info)
+                    for funding_info in all_funding_info:
+                        if funding_info["connector"] == connector_name:
+                            funding_info[token] = self.format_percent(info.rate)
+                            break
 
-                best_paths_info = {"token": token}
+                best_paths_info = {"Token": token}
                 prices_and_fees_cache = dict()
                 best_combination = self.get_most_trade_profitable_combination(prices_and_fees_cache, \
                                                                                funding_info_report, token)
@@ -777,9 +787,19 @@ class FundingRateArbitrage(StrategyV2Base):
                     all_best_paths.append(best_paths_info)
 
             funding_rate_status.append(f"\nMin Trade Profitability: {self.config.min_trade_profitability:.2%}")
+
+            balances_info = [{ "Currency": "Available USDT" }, { "Currency": "All USDT" }]
+            for connector_name in self.connectors.keys():
+                avail_usd = self.connectors[connector_name].available_balances.get(self.quote_markets_map.get(connector_name, 'USDT'), 0)
+                all_usd = self.connectors[connector_name].get_balance(self.quote_markets_map.get(connector_name, 'USDT'))
+                balances_info[0][connector_name] = avail_usd
+                balances_info[1][connector_name] = all_usd
+
             funding_rate_status.append("Funding Rate Info")
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_funding_info), table_format="psql",))
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_best_paths), table_format="psql",))
+            funding_rate_status.append("USDT Balances")
+            funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(balances_info), table_format="psql"))
 
             funding_rate_status.append(f"\nActive Funding Arbitrages:")
             active_arbitrage_info = []
@@ -850,8 +870,8 @@ class FundingRateArbitrage(StrategyV2Base):
                     arbitrage_info = {'token': token}
                     connector_1 = funding_arbitrage_info["connector_1"]
                     connector_2 = funding_arbitrage_info["connector_2"]
-                    arbitrage_info['Connector 1'] = connector_1
-                    arbitrage_info['Connector 2'] = connector_2
+                    arbitrage_info['Conn 1'] = connector_1.replace('_perpetual', '')
+                    arbitrage_info['Conn 2'] = connector_2.replace('_perpetual', '')
                     executors = self.get_executors(funding_arbitrage_info["executors_ids"])
                     if len(executors) != 2:
                         continue
@@ -886,9 +906,13 @@ class FundingRateArbitrage(StrategyV2Base):
                         sum(funding_payment.amount for funding_payment in funding_arbitrage_info["funding_payments"]) \
                         / self.config.position_size_quote
                     executors_pnl = sum(executor.net_pnl_pct for executor in executors)
-                    arbitrage_info['Fund Pnl'] = self.format_percent(funding_payments_pnl)
-                    arbitrage_info['Trade Pnl'] = self.format_percent(executors_pnl)
-                    arbitrage_info['TS'] = funding_arbitrage_info['stop_reason']
+                    arbitrage_info['Fd Pnl'] = self.format_percent(funding_payments_pnl)
+                    arbitrage_info['Td Pnl'] = self.format_percent(executors_pnl)
+                    arbitrage_info['SR'] = funding_arbitrage_info['stop_reason']
+                    stop_time = datetime.utcfromtimestamp(funding_arbitrage_info['stop_time']).strftime('%Y-%m-%d %H:%M:%S UTC')
+                    arbitrage_info['Stop Time'] = stop_time
+                    hold_time = self.format_time(funding_arbitrage_info['stop_time'] - funding_arbitrage_info['start_time'])
+                    arbitrage_info['Hold Time'] = hold_time
 
                     stopped_arbitrage_info.append(arbitrage_info)
             funding_rate_status.append( \
