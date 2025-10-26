@@ -710,6 +710,15 @@ class TradingCore:
             except Exception as e:
                 self.logger().warning(f"[dynamic-ws] Failed to remove strategy from clock: {e}")
 
+        # Detach all existing markets from the strategy to drop strong references to old connectors
+        try:
+            old_active_markets = list(getattr(strategy_ref, "active_markets", []) or [])
+            if len(old_active_markets) > 0:
+                strategy_ref.remove_markets(old_active_markets)
+                self.logger().debug(f"[dynamic-ws] Removed {len(old_active_markets)} markets from strategy before reinit.")
+        except Exception as e:
+            self.logger().warning(f"[dynamic-ws] Failed to remove old markets from strategy: {e}")
+
         # Remove and recreate specified connectors
         existing_names = set(self.connector_manager.connectors.keys())
         target_names = set(name for name, _ in market_names)
