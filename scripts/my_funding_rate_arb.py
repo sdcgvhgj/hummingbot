@@ -77,21 +77,12 @@ class _MemoryMonitor:
         self._last_rss = 0
         self._last_snapshot = None
         self._tracemalloc_started = False
+        # On-demand tracemalloc session control (SIGUSR1 triggers a 5min window)
+        self._tm_session_deadline = 0.0  # monotonic deadline when to stop
+        self._tm_pending_begin = False   # set by signal handler; consumed in loop
 
     def start(self):
-        if not _HAS_TRACEMALLOC:
-            self._logger().warning("[mem] tracemalloc unavailable; memory snapshots disabled")
-            return
-        try:
-            if not self._tracemalloc_started:
-                # Keep up to 25 frames for better grouping; adjust if overhead is a concern
-                tracemalloc.start(5)
-                self._tracemalloc_started = True
-        except Exception as e:
-            self._logger().warning(f"[mem] Failed to start tracemalloc: {e}")
-            return
-
-        # Try to install a SIGUSR1 handler for manual dumps (best-effort)
+        # Install a SIGUSR1 handler to start a 5-minute tracemalloc session on demand
         if _HAS_SIGNAL:
             try:
                 signal.signal(signal.SIGUSR1, self._handle_sigusr1)
@@ -101,7 +92,8 @@ class _MemoryMonitor:
 
         self._thread = threading.Thread(target=self._run_loop, name="MemoryMonitor", daemon=True)
         self._thread.start()
-        self._logger().info("[mem] Memory monitor started")
+        mode = "on-demand" if _HAS_TRACEMALLOC else "no-tracemalloc"
+        self._logger().info(f"[mem] Memory monitor started ({mode}); send SIGUSR1 to trace for 5min")
 
     def stop(self):
         try:
@@ -110,10 +102,30 @@ class _MemoryMonitor:
             pass
 
     def _handle_sigusr1(self, signum, frame):
+        # Defer heavy work to background thread
         try:
-            self._dump_snapshot(reason="signal")
+            self._tm_pending_begin = True
         except Exception as e:
-            self._logger().warning(f"[mem] SIGUSR1 dump failed: {e}")
+            self._logger().warning(f"[mem] SIGUSR1 handling failed: {e}")
+
+    def _begin_tracemalloc_session(self, duration_sec: int = 300):
+        if not _HAS_TRACEMALLOC:
+            self._logger().warning("[mem] tracemalloc unavailable; cannot start session")
+            return
+        try:
+            import time as _time
+            now = _time.monotonic()
+            if not self._tracemalloc_started:
+                # Keep small frame depth to reduce overhead
+                tracemalloc.start(5)
+                self._tracemalloc_started = True
+                self._last_snapshot = None  # reset diff base for this session
+                self._logger().info("[mem] tracemalloc session started (5min)")
+            else:
+                self._logger().info("[mem] tracemalloc session extended")
+            self._tm_session_deadline = now + max(1, int(duration_sec))
+        except Exception as e:
+            self._logger().warning(f"[mem] Failed to start tracemalloc session: {e}")
 
     def _current_rss(self) -> int:
         if _HAS_PSUTIL:
@@ -138,6 +150,15 @@ class _MemoryMonitor:
         self._last_rss = self._current_rss()
         while not self._stop.is_set():
             try:
+                # Handle on-demand session begin triggered by SIGUSR1
+                if self._tm_pending_begin:
+                    self._tm_pending_begin = False
+                    self._begin_tracemalloc_session(300)
+                    try:
+                        self._dump_snapshot(reason="tm_begin")
+                    except Exception as e:
+                        self._logger().warning(f"[mem] tm_begin snapshot failed: {e}")
+
                 # Periodic dump
                 self._dump_snapshot(reason="interval")
 
@@ -147,6 +168,24 @@ class _MemoryMonitor:
                     if self._last_rss and cur_rss - self._last_rss >= self._rss_threshold_bytes:
                         self._dump_snapshot(reason=f"rss+{(cur_rss - self._last_rss) / (1024*1024):.1f}MB")
                         self._last_rss = cur_rss
+
+                # Stop tracemalloc session if deadline reached
+                if self._tracemalloc_started:
+                    import time as _time
+                    if self._tm_session_deadline and _time.monotonic() >= self._tm_session_deadline:
+                        try:
+                            self._dump_snapshot(reason="tm_end")
+                        except Exception as e:
+                            self._logger().warning(f"[mem] tm_end snapshot failed: {e}")
+                        try:
+                            tracemalloc.stop()
+                            self._logger().info("[mem] tracemalloc session stopped")
+                        except Exception as e:
+                            self._logger().warning(f"[mem] Failed to stop tracemalloc: {e}")
+                        finally:
+                            self._tracemalloc_started = False
+                            self._last_snapshot = None
+                            self._tm_session_deadline = 0.0
             except Exception as e:
                 self._logger().warning(f"[mem] monitor loop error: {e}")
             finally:
@@ -164,8 +203,8 @@ class _MemoryMonitor:
                 if rss:
                     fh.write(f"RSS: {rss/ (1024*1024):.2f} MB\n")
 
-                # tracemalloc stats
-                if _HAS_TRACEMALLOC:
+                # tracemalloc stats (only if session active)
+                if _HAS_TRACEMALLOC and self._tracemalloc_started:
                     current, peak = tracemalloc.get_traced_memory()
                     fh.write(f"tracemalloc current: {current/(1024*1024):.2f} MB, peak: {peak/(1024*1024):.2f} MB\n")
                     snap = tracemalloc.take_snapshot()
@@ -216,28 +255,29 @@ class _MemoryMonitor:
                 try:
                     import builtins
                     sized = []
-                    for o in gc.get_objects():
-                        try:
-                            t = type(o)
-                            if t in (list, dict, set, tuple):
-                                size = sys.getsizeof(o)
-                                ln = len(o) if hasattr(o, '__len__') else 0
-                                mod = getattr(t, '__module__', '')
-                                # Attempt to retrieve o's variable name from globals or locals
-                                var_name = None
-                                try:
-                                    for scope in (globals(), locals()):
-                                        for k, v in scope.items():
-                                            if v is o:
-                                                var_name = k
-                                                break
-                                        if var_name:
-                                            break
-                                except Exception:
-                                    var_name = None
-                                sized.append((size, ln, t.__name__, mod, o, var_name))
-                        except Exception:
-                            continue
+                    # if self._tracemalloc_started:
+                    #     for o in gc.get_objects():
+                    #         try:
+                    #             t = type(o)
+                    #             if t in (list, dict, set, tuple):
+                    #                 size = sys.getsizeof(o)
+                    #                 ln = len(o) if hasattr(o, '__len__') else 0
+                    #                 mod = getattr(t, '__module__', '')
+                    #                 # Attempt to retrieve o's variable name from globals or locals
+                    #                 var_name = None
+                    #                 try:
+                    #                     for scope in (globals(), locals()):
+                    #                         for k, v in scope.items():
+                    #                             if v is o and not k == 'o':
+                    #                                 var_name = k
+                    #                                 break
+                    #                         if var_name:
+                    #                             break
+                    #                 except Exception:
+                    #                     var_name = None
+                    #                 sized.append((size, ln, t.__name__, mod, o, var_name))
+                    #         except Exception:
+                    #             continue
                     sized.sort(key=lambda x: x[0], reverse=True)
                     for i, (size, ln, tname, mod, o, var_name) in enumerate(sized[: self._topn], 1):
                         preview = None
@@ -1088,6 +1128,9 @@ class FundingRateArbitrage(StrategyV2Base):
                     self.logger().debug(f"[dynamic-topk] Skipping REST scan because there are active arbitrages...")
                     await asyncio.sleep(5)
                     continue
+
+                self.is_stopping_creating_actions = True
+                self.logger().info("[dynamic-topk] Stopping creating actions...")
 
                 is_first_scan = False
 
