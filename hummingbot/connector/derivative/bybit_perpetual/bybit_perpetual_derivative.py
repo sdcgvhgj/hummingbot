@@ -727,9 +727,9 @@ class BybitPerpetualDerivative(PerpetualDerivativePyBase):
                         perpetual_funding_interval_seconds=float(instrument["fundingInterval"])*60,
                     )
                     if int(instrument["deliveryTime"]) != 0:
-                        self.logger().debug(f"BybitPerp {trading_pair} in {name} is delisting: {instrument["deliveryTime"]}")
+                        self.logger().debug(f"BybitPerp {trading_pair} is delisting: {instrument["deliveryTime"]}")
                     if trading_rules[trading_pair].perpetual_delisting_time_seconds is not None and trading_rules[trading_pair].perpetual_delisting_time_seconds > 0:
-                        self.logger().debug(f"BybitPerp {trading_pair} in {name} is delisting: {trading_rules[trading_pair].perpetual_delisting_time_seconds}")
+                        self.logger().debug(f"BybitPerp {trading_pair} is delisting: {trading_rules[trading_pair].perpetual_delisting_time_seconds}")
             except Exception:
                 self.logger().exception(f"Error parsing the trading pair rule: {instrument}. Skipping...")
         return list(trading_rules.values())
