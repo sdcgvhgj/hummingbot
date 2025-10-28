@@ -373,7 +373,17 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
             await asyncio.sleep(60) # 1 minute
             await self._update_funding_info()
             # clear the funding info queue to avoid memory leak
-            self._orderbook_ds._message_queue[self._orderbook_ds._funding_info_messages_queue_key].clear()
+            funding_info_event_count = 0
+            try:
+                while True:
+                    funding_info_event = self._orderbook_ds._message_queue[self._orderbook_ds._funding_info_messages_queue_key].get_nowait()
+                    funding_info_event_count += 1
+            except asyncio.QueueEmpty:
+                self.logger().debug(f"Funding info event cleared count: {funding_info_event_count}")
+                continue
+            except Exception as e:
+                self.logger().error(f"Unexpected error while clearing funding info event queue: {e}")
+                continue
         # await self._orderbook_ds.listen_for_funding_info(
         #     output=self._perpetual_trading.funding_info_stream
         # )

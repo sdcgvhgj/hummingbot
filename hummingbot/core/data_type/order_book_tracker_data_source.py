@@ -318,6 +318,9 @@ class OrderBookTrackerDataSource(metaclass=ABCMeta):
                 f"rates t={rate_trade:.1f}/s d={rate_diff:.1f}/s s={rate_snap:.3f}/s u={rate_unknown:.3f}/s"
             )
 
+            if self._funding_info_messages_queue_key is not None and lens.get(self._funding_info_messages_queue_key, 0) > 0:
+                self.logger().info(f"[ob-backlog] domain={self._domain} lens funding_info={lens.get(self._funding_info_messages_queue_key,0)}")
+
             # reset window
             self._mon_counts = {
                 self._trade_messages_queue_key: 0,
