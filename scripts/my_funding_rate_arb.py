@@ -234,7 +234,8 @@ class _MemoryMonitor:
                     try:
                         all_objs = muppy.get_objects()
                         sum1 = summary.summarize(all_objs)
-                        summary.print_(sum1, stream=fh)
+                        formatted_lines = summary.format_(sum1)
+                        fh.write("\n".join(formatted_lines) + "\n")
                     except Exception as e:
                         fh.write(f"<pympler failed: {e}>\n")
                 else:
