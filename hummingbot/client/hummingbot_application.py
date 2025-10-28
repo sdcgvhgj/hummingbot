@@ -213,9 +213,9 @@ class HummingbotApplication(*commands):
     async def run(self):
         """Run the application - either UI mode or headless mode."""
         if self.headless_mode:
-            # Start MQTT market events forwarding if MQTT is available
-            if self._mqtt is not None:
-                self._mqtt.start_market_events_fw()
+            # # Start MQTT market events forwarding if MQTT is available
+            # if self._mqtt is not None:
+            #     self._mqtt.start_market_events_fw()
             await self.run_headless()
         else:
             await self.app.run()
@@ -225,19 +225,19 @@ class HummingbotApplication(*commands):
         try:
             self.logger().info("Starting Hummingbot in headless mode...")
 
-            # Validate MQTT is enabled for headless mode
-            if not self.client_config_map.mqtt_bridge.mqtt_autostart:
-                error_msg = (
-                    "ERROR: MQTT must be enabled for headless mode!\n"
-                    "Without MQTT, there would be no way to control the bot.\n"
-                    "Please enable MQTT by setting 'mqtt_autostart: true' in your config file.\n"
-                    "You can also start it manually with 'mqtt start' before switching to headless mode."
-                )
-                self.logger().error(error_msg)
-                raise RuntimeError("MQTT is required for headless mode")
+            # # Validate MQTT is enabled for headless mode
+            # if not self.client_config_map.mqtt_bridge.mqtt_autostart:
+            #     error_msg = (
+            #         "ERROR: MQTT must be enabled for headless mode!\n"
+            #         "Without MQTT, there would be no way to control the bot.\n"
+            #         "Please enable MQTT by setting 'mqtt_autostart: true' in your config file.\n"
+            #         "You can also start it manually with 'mqtt start' before switching to headless mode."
+            #     )
+            #     self.logger().error(error_msg)
+            #     raise RuntimeError("MQTT is required for headless mode")
 
-            self.logger().info("MQTT enabled - waiting for MQTT commands...")
-            self.logger().info("Bot is ready to receive commands via MQTT")
+            # self.logger().info("MQTT enabled - waiting for MQTT commands...")
+            # self.logger().info("Bot is ready to receive commands via MQTT")
 
             # Keep running until shutdown
             while True:
