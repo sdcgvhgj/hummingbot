@@ -370,8 +370,10 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
     async def _listen_for_funding_info(self):
         await self._init_funding_info()
         while True:
-            await asyncio.sleep(60.0 * 5)
+            await asyncio.sleep(60) # 1 minute
             await self._update_funding_info()
+            # clear the funding info queue to avoid memory leak
+            self._orderbook_ds._message_queue[self._orderbook_ds._funding_info_messages_queue_key].clear()
         # await self._orderbook_ds.listen_for_funding_info(
         #     output=self._perpetual_trading.funding_info_stream
         # )
