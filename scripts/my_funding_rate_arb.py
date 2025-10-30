@@ -316,6 +316,12 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Enter the min funding rate profitability to enter in a position (e.g. 0.001): ",
             "prompt_on_new": True}
     )
+    min_price_profitability: Decimal = Field(
+        default=0.001,
+        json_schema_extra={
+            "prompt": lambda mi: "Enter the min price profitability to enter in a position (e.g. 0.001): ",
+            "prompt_on_new": True}
+    )
     min_take_profit: Decimal = Field(
         default=0.001,
         json_schema_extra={
@@ -343,6 +349,12 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
         default=240,
         json_schema_extra={
             "prompt": lambda mi: "Enter x such that only open when next funding is within x minutes (e.g. 240): ",
+            "prompt_on_new": True}
+    )
+    min_time_to_next_funding: Decimal = Field(
+        default=10,
+        json_schema_extra={
+            "prompt": lambda mi: "Enter x such that only open when next funding is at least x minutes (e.g. 10): ",
             "prompt_on_new": True}
     )
     # Dynamic Top-K scanning controls
@@ -387,6 +399,14 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
         default=256,
         json_schema_extra={
             "prompt": lambda mi: "Trigger snapshot when RSS grows by MB (0=disable, e.g. 256): ",
+            "prompt_on_new": True}
+    )
+
+    # Price smoothing controls
+    ema_ticks: int = Field(
+        default=5,
+        json_schema_extra={
+            "prompt": lambda mi: "EMA window in ticks for price smoothing (e.g. 5): ",
             "prompt_on_new": True}
     )
 
@@ -438,6 +458,14 @@ class FundingRateArbitrage(StrategyV2Base):
         self._latest_topk_debug = []
         self.is_stopping_creating_actions = False
         self._mem_monitor = None
+
+        # EMA price smoothing state
+        try:
+            ticks = int(getattr(self.config, "ema_ticks", 5))
+        except Exception:
+            ticks = 5
+        self._ema_prices = {}
+        self._ema_alpha = (Decimal(2) / Decimal(ticks + 1)) if ticks and ticks > 1 else Decimal(1)
 
     def start(self, clock: Clock, timestamp: float) -> None:
         """
@@ -509,12 +537,13 @@ class FundingRateArbitrage(StrategyV2Base):
         if connector_name in prices_and_fees_cache:
             return prices_and_fees_cache[connector_name]
         trading_pair = self.get_trading_pair_for_connector(token, connector_name)
-        price = Decimal(self.market_data_provider.get_price_for_quote_volume(
+        raw_price = Decimal(self.market_data_provider.get_price_for_quote_volume(
             connector_name=connector_name,
             trading_pair=trading_pair,
             quote_volume=self.config.position_size_quote,
             is_buy=side == TradeType.BUY,
         ).result_price)
+        price = self._ema_update_and_get(connector_name, trading_pair, raw_price)
         fee = self.connectors[connector_name].get_fee(
             base_currency=trading_pair.split("-")[0],
             quote_currency=trading_pair.split("-")[1],
@@ -533,7 +562,7 @@ class FundingRateArbitrage(StrategyV2Base):
         valid_connectors = []
         for connector in funding_info_report:
             time_to_funding = funding_info_report[connector].next_funding_utc_timestamp - self.current_timestamp
-            if time_to_funding / 60 < self.config.max_time_to_next_funding:
+            if time_to_funding / 60 < self.config.max_time_to_next_funding and time_to_funding / 60 > self.config.min_time_to_next_funding:
                 valid_connectors.append(connector)
 
         # TODO: computation delay mesure
@@ -568,11 +597,68 @@ class FundingRateArbitrage(StrategyV2Base):
                         best_combination = (connector_1, connector_2, trade_side, trade_profit, \
                                             rate_1, rate_2, price_1, price_2, fee_1, fee_2)
         return best_combination
+
+    def _ema_key(self, connector_name: str, trading_pair: str) -> str:
+        return f"{connector_name}|{trading_pair}"
+
+    def _ema_update_and_get(self, connector_name: str, trading_pair: str, new_price: Decimal) -> Decimal:
+        if self._ema_alpha == Decimal(1):
+            return new_price
+        key = self._ema_key(connector_name, trading_pair)
+        old = self._ema_prices.get(key)
+        if old is None:
+            ema = new_price
+        else:
+            ema = self._ema_alpha * new_price + (Decimal(1) - self._ema_alpha) * old
+        self._ema_prices[key] = ema
+        return ema
+
+    def get_best_combination_by_heuristic(self, prices_and_fees_cache: Dict, funding_info_report: Dict, token: str):
+        valid_connectors = []
+        for connector in funding_info_report:
+            time_to_funding = funding_info_report[connector].next_funding_utc_timestamp - self.current_timestamp
+            if time_to_funding / 60 < self.config.max_time_to_next_funding and time_to_funding / 60 > self.config.min_time_to_next_funding:
+                valid_connectors.append(connector)
+
+        best_score = None
+        best = None
+        for connector_1 in valid_connectors:
+            for connector_2 in valid_connectors:
+                if connector_1 == connector_2:
+                    continue
+                t1 = funding_info_report[connector_1].next_funding_utc_timestamp - self.current_timestamp
+                t2 = funding_info_report[connector_2].next_funding_utc_timestamp - self.current_timestamp
+                if abs(t1 - t2) > 60:
+                    continue
+                price_1, fee_1 = self.get_price_and_fee_with_cache(prices_and_fees_cache, connector_1, token, TradeType.BUY)
+                price_2, fee_2 = self.get_price_and_fee_with_cache(prices_and_fees_cache, connector_2, token, TradeType.SELL)
+                rate_1 = funding_info_report[connector_1].rate
+                rate_2 = funding_info_report[connector_2].rate
+                # 启发式打分：单位时间的预期收益
+                time_to_funding = max(Decimal(60), Decimal(max(t1, t2)))  # 至少按60秒防止分母过小
+                score = self.heuristic_profitability_evaluation(price_1, price_2, fee_1, fee_2, rate_1, rate_2, time_to_funding)
+
+                # 交易期望收益（用于后续阈值判断）
+                price_profit = (price_2 - price_1) / price_1
+                funding_rate_profit = rate_2 - rate_1
+                trade_profit = price_profit + funding_rate_profit - fee_1 * 2 - fee_2 * 2
+
+                if best_score is None or float(score) > float(best_score):
+                    best_score = score
+                    best = (connector_1, connector_2, TradeType.BUY, trade_profit, rate_1, rate_2, price_1, price_2, fee_1, fee_2)
+
+        return best_score, best
     
     def enough_balance(self, connector_name):
         connector = self.connectors[connector_name]
         avail_usd = float(connector.available_balances.get(self.quote_markets_map.get(connector_name, 'USDT'), 0))
         return avail_usd >= float(self.config.position_size_quote) / float(self.config.leverage), avail_usd
+
+    def heuristic_profitability_evaluation(self, price_1, price_2, fee_1, fee_2, rate_1, rate_2, time_to_funding):
+        price_profit = (price_2 - price_1) / price_1 - self.config.min_price_profitability
+        funding_rate_profit = rate_2 - rate_1
+        profit_rate = (price_profit + funding_rate_profit - fee_1 * 2 - fee_2 * 2) / time_to_funding
+        return profit_rate
 
     def create_actions_proposal(self) -> List[CreateExecutorAction]:
         """
@@ -587,61 +673,76 @@ class FundingRateArbitrage(StrategyV2Base):
         if self.create_action_cool_down > 0:
             self.logger().debug(f"Create action cool down: {self.create_action_cool_down}")
             return []
-        create_actions = []
+        # 1) 为每个 token 计算启发式评分最高的组合
+        token_rankings = []
         for token in self.tokens_for_trading():
-            if token not in self.active_funding_arbitrages:
-                self.token_failure_cool_down.setdefault(token, 0)
-                self.token_failure_cool_down[token] -= 1
-                if self.token_failure_cool_down[token] > 0:
+            if token in self.active_funding_arbitrages:
+                continue
+            self.token_failure_cool_down.setdefault(token, 0)
+            self.token_failure_cool_down[token] -= 1
+            if self.token_failure_cool_down[token] > 0:
+                continue
+            prices_and_fees_cache = {}
+            funding_info_report = self.get_funding_info_by_token(token)
+            score, best_combo = self.get_best_combination_by_heuristic(prices_and_fees_cache, funding_info_report, token)
+            if best_combo is None:
+                continue
+            token_rankings.append((token, score, best_combo))
+
+        # 2) 按评分从大到小排序
+        token_rankings.sort(key=lambda x: float(x[1]), reverse=True)
+
+        # 3) 逐个尝试原有阈值逻辑，符合则开仓并返回
+        for token, _, best_combination in token_rankings:
+            connector_1, connector_2, trade_side, expected_profitability, \
+                rate_1, rate_2, price_1, price_2, fee_1, fee_2 = best_combination
+
+            if expected_profitability >= self.config.min_trade_profitability \
+                and rate_2 - rate_1 >= self.config.min_funding_profitability:
+                enough_1, balance_1 = self.enough_balance(connector_1)
+                enough_2, balance_2 = self.enough_balance(connector_2)
+                if not enough_1 or not enough_2:
+                    self.logger().warning(
+                        f"Balance Not enough for {connector_1 if not enough_1 else connector_2} "
+                        f"({(balance_1 if not enough_1 else balance_2):.3f}), didn't open positions")
                     continue
-                prices_and_fees_cache = dict()
-                funding_info_report = self.get_funding_info_by_token(token)
-                best_combination = self.get_most_trade_profitable_combination(prices_and_fees_cache,
-                                                                              funding_info_report, token)
-                if not best_combination:
+
+                self.logger().info(
+                    f"Best Combination: {token} | {connector_1} | {connector_2} | {trade_side} | "
+                    f"rate_1={self.format_percent(rate_1)} | rate_2={self.format_percent(rate_2)} | "
+                    f"price_1={price_1:.7f} | price_2={price_2:.7f} | "
+                    f"fee_1={self.format_percent(fee_1)} | fee_2={self.format_percent(fee_2)} | "
+                    f"balance_1={balance_1:.3f} | balance_2={balance_2:.3f} | "
+                    f"expected_profitability={self.format_percent(expected_profitability)} ")
+
+                if self.is_stopping_creating_actions:
+                    self.logger().debug(
+                        f"Stopping creating actions, skipping creation of executors for {token}")
                     continue
-                connector_1, connector_2, trade_side, expected_profitability, \
-                        rate_1, rate_2, price_1, price_2, fee_1, fee_2 = best_combination
-                if expected_profitability >= self.config.min_trade_profitability \
-                    and rate_2 - rate_1 >= self.config.min_funding_profitability:
-                    enough_1, balance_1 = self.enough_balance(connector_1)
-                    enough_2, balance_2 = self.enough_balance(connector_2)
-                    if not enough_1 or not enough_2:
-                        self.logger().warning(f"Balance Not enough for {connector_1 if not enough_1 else connector_2} "
-                                              f"({(balance_1 if not enough_1 else balance_2):.3f})"
-                                              f", didn't open positions")
-                        continue
-                    self.logger().info(f"Best Combination: {token} | {connector_1} | {connector_2} | {trade_side} | "
-                                       f"rate_1={self.format_percent(rate_1)} | rate_2={self.format_percent(rate_2)} | "
-                                       f"price_1={price_1:.7f} | price_2={price_2:.7f} | "
-                                       f"fee_1={self.format_percent(fee_1)} | fee_2={self.format_percent(fee_2)} | "
-                                       f"balance_1={balance_1:.3f} | balance_2={balance_2:.3f} | "
-                                       f"expected_profitability={self.format_percent(expected_profitability)} ")
-                    if self.is_stopping_creating_actions:
-                        self.logger().debug(f"Stopping creating actions, skipping creation of executors for {token}")
-                        continue
-                    self.logger().info(f"Starting executors...")
-                    position_executor_config_1, position_executor_config_2 = \
-                        self.get_position_executors_config(token, connector_1, connector_2, trade_side, price_1, price_2)
-                    self.active_funding_arbitrages[token] = {
-                        "connector_1": connector_1,
-                        "connector_2": connector_2,
-                        "rate_1": rate_1,
-                        "rate_2": rate_2,
-                        "price_1": price_1,
-                        "price_2": price_2,
-                        "fee_1": fee_1,
-                        "fee_2": fee_2,
-                        "expected_profitability": expected_profitability,
-                        "executors_ids": [position_executor_config_1.id, position_executor_config_2.id],
-                        "side": trade_side,
-                        "funding_payments": [],
-                        "start_time": self.current_timestamp
-                    }
-                    self.create_action_cool_down = CREATE_ACTION_COOL_DOWN_COUNT
-                    return [CreateExecutorAction(executor_config=position_executor_config_1),
-                            CreateExecutorAction(executor_config=position_executor_config_2)]
-        return create_actions
+
+                self.logger().info("Starting executors...")
+                position_executor_config_1, position_executor_config_2 = \
+                    self.get_position_executors_config(token, connector_1, connector_2, trade_side, price_1, price_2)
+                self.active_funding_arbitrages[token] = {
+                    "connector_1": connector_1,
+                    "connector_2": connector_2,
+                    "rate_1": rate_1,
+                    "rate_2": rate_2,
+                    "price_1": price_1,
+                    "price_2": price_2,
+                    "fee_1": fee_1,
+                    "fee_2": fee_2,
+                    "expected_profitability": expected_profitability,
+                    "executors_ids": [position_executor_config_1.id, position_executor_config_2.id],
+                    "side": trade_side,
+                    "funding_payments": [],
+                    "start_time": self.current_timestamp
+                }
+                self.create_action_cool_down = CREATE_ACTION_COOL_DOWN_COUNT
+                return [CreateExecutorAction(executor_config=position_executor_config_1),
+                        CreateExecutorAction(executor_config=position_executor_config_2)]
+
+        return []
 
     def create_stop_executor_action(self, executors: List[ExecutorInfo], \
                                     price_1: float = None, price_2: float = None) -> List[StopExecutorAction]:
@@ -724,7 +825,8 @@ class FundingRateArbitrage(StrategyV2Base):
 
             # TODO strengthen stop_loss_condition
             stop_loss_condition = len(funding_arbitrage_info["funding_payments"]) > 1 \
-                                and c_price_2 - c_price_1 < 0
+                                and (rate_2 - rate_1 < self.config.min_funding_profitability \
+                                or (c_price_2 - c_price_1) / c_price_1 < self.config.min_price_profitability)
             if take_profit_condition:
                 self.logger().info(f"Take profit profitability reached for {token}, stopping executors, "
                                    f"{executors_pnl_by_hand=:.4%}, "
