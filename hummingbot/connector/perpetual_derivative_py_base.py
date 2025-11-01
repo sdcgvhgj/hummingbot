@@ -205,6 +205,7 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
         raise NotImplementedError
 
     async def stop_network(self):
+        self.logger().debug("[funding polling debug] PerpetualDerivativePyBase: Stopping network for {}".format(self._domain))
         self._funding_fee_poll_notifier = asyncio.Event()
         self._perpetual_trading.stop()
         if self._funding_info_listener_task is not None:
@@ -371,6 +372,7 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
         await self._init_funding_info()
         while True:
             await asyncio.sleep(60) # 1 minute
+            self.logger().debug("[funding polling debug] PerpetualDerivativePyBase: funding_info_listener_task running")
             await self._update_funding_info()
             # clear the funding info queue to avoid memory leak
             funding_info_event_count = 0
@@ -389,6 +391,7 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
         # )
 
     async def _update_funding_info(self):
+        self.logger().debug("[funding polling debug] PerpetualDerivativePyBase: Updating funding info")
         for trading_pair in self.trading_pairs:
             new_funding_info = await self._orderbook_ds.get_funding_info(trading_pair)
             pretty_time = datetime.utcfromtimestamp(new_funding_info.next_funding_utc_timestamp).strftime('%Y-%m-%d %H:%M:%S UTC')
@@ -425,6 +428,7 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
         """
         await self._update_all_funding_payments(fire_event_on_new=False)  # initialization of the timestamps
         while True:
+            self.logger().debug("[funding polling debug] PerpetualDerivativePyBase: funding_payment_polling_loop running")
             await self._funding_fee_poll_notifier.wait()
             # There is a chance of race condition when the next await allows for a set() to occur before the clear()
             # Maybe it is better to use a asyncio.Condition() instead of asyncio.Event()?
@@ -432,17 +436,13 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
             await self._update_all_funding_payments(fire_event_on_new=True)
 
     async def _update_all_funding_payments(self, fire_event_on_new: bool):
+        self.logger().debug("[funding polling debug] PerpetualDerivativePyBase: Updating all funding payments")
         try:
-            tasks = []
             for trading_pair in self.trading_pairs:
                 # TODO: potential rate limit
-                tasks.append(
-                    asyncio.create_task(
-                        self._update_funding_payment(trading_pair=trading_pair, fire_event_on_new=fire_event_on_new)
-                    )
-                )
-            await safe_gather(*tasks)
+                await self._update_funding_payment(trading_pair=trading_pair, fire_event_on_new=fire_event_on_new)
         except asyncio.CancelledError:
+            self.logger().debug("[funding polling debug] PerpetualDerivativePyBase: Funding payment polling loop cancelled")
             raise
 
     async def _update_funding_payment(self, trading_pair: str, fire_event_on_new: bool) -> bool:

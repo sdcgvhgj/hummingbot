@@ -713,6 +713,7 @@ class ExchangePyBase(ExchangeBase, ABC):
         return NetworkStatus.CONNECTED
 
     async def stop_network(self):
+        self.logger().debug("[funding polling debug] ExchangePyBase: Stopping network for {}".format(self._domain))
         # Resets timestamps and events for status_polling_loop
         self._last_poll_timestamp = 0
         self._last_timestamp = 0
