@@ -1063,6 +1063,39 @@ class FundingRateArbitrage(StrategyV2Base):
                 format_df_for_printout(df=pd.DataFrame(stopped_arbitrage_info), table_format="psql",))
         return original_status + "\n".join(funding_rate_status)
 
+    def _on_tokens_updated_cleanup(self, new_tokens: Set[str]) -> None:
+        """
+        在动态WS订阅变更后，清理与旧代币/旧交易对相关的缓存与状态，避免持有无用引用导致内存增长。
+        """
+        try:
+            new_tokens_set = set(new_tokens)
+
+            # 1) 移除已不在订阅集合中的活动套利条目（正常情况下执行动态扫描时应无活动仓位，这里兜底清理）
+            for token in list(self.active_funding_arbitrages.keys()):
+                if token not in new_tokens_set:
+                    self.active_funding_arbitrages.pop(token, None)
+
+            # 2) 清理支持交换所缓存映射
+            for token in list(self.tokens_supported_exchange_map.keys()):
+                if token not in new_tokens_set:
+                    self.tokens_supported_exchange_map.pop(token, None)
+
+            # 3) 仅保留新代币的失败冷却计数
+            self.token_failure_cool_down = {t: self.token_failure_cool_down.get(t, 0) for t in new_tokens_set}
+
+            # 4) EMA 价格缓存与TopK调试缓存清空（交易对已整体调整，保留无意义）
+            self._ema_prices.clear()
+            self._latest_topk_debug = []
+
+            # 5) 为新代币确保有stopped结构，避免后续引用KeyError
+            for t in new_tokens_set:
+                if t not in self.stopped_funding_arbitrages:
+                    self.stopped_funding_arbitrages[t] = []
+
+            self.logger().info(f"[dynamic-topk] Cleaned caches for tokens: {','.join(sorted(new_tokens_set))}")
+        except Exception as e:
+            self.logger().warning(f"[dynamic-topk] Token update cleanup failed: {e}")
+
     async def _compute_topk_via_rest(self):
         """
         Compute Top-K tokens by expected profitability using REST (prices + funding info) across current connectors.
@@ -1198,6 +1231,11 @@ class FundingRateArbitrage(StrategyV2Base):
         await core.reinitialize_markets(market_names)
 
         # Are there more things to do here?
+        # Cleanup caches and per-token states after WS markets refreshed
+        try:
+            self._on_tokens_updated_cleanup(self._dynamic_topk_tokens)
+        except Exception as e:
+            self.logger().warning(f"[dynamic-topk] Cleanup after token update failed: {e}")
 
     async def _dynamic_scan_loop(self):
         """
