@@ -786,6 +786,7 @@ class TradingCore:
         try:
             for con in connector_names:
                 temp_connectors[con] = self.connector_manager.create_connector(con, [], self._trading_required)
+                temp_connectors[con].nickname = temp_connectors[con].name + '_temp' if temp_connectors[con].name else 'temp'
                 await temp_connectors[con].start_trading_rules_polling()
 
             # Wait until trading rules are initialized

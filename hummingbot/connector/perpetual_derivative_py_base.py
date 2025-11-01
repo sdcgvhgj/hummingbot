@@ -41,6 +41,8 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
 
         self._budget_checker = PerpetualBudgetChecker(self)
 
+        self.nickname = self.name
+
     @property
     @abstractmethod
     def funding_fee_poll_interval(self) -> int:
@@ -205,7 +207,8 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
         raise NotImplementedError
 
     async def stop_network(self):
-        self.logger().debug("[funding polling debug] PerpetualDerivativePyBase: Stopping network for {}".format(self._domain))
+        self.logger().debug(f"[funding polling debug] PerpetualDerivativePyBase: Stopping network for {self.nickname if self.nickname else self.name}, "
+                            f"trading-pairs: {self.trading_pairs}")
         self._funding_fee_poll_notifier = asyncio.Event()
         self._perpetual_trading.stop()
         if self._funding_info_listener_task is not None:
@@ -372,7 +375,8 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
         await self._init_funding_info()
         while True:
             await asyncio.sleep(60) # 1 minute
-            self.logger().debug("[funding polling debug] PerpetualDerivativePyBase: funding_info_listener_task running")
+            self.logger().debug(f"[funding polling debug] PerpetualDerivativePyBase: funding_info_listener_task running on {self.nickname if self.nickname else self.name}, "
+                                    f"trading-pairs: {self.trading_pairs}")
             await self._update_funding_info()
             # clear the funding info queue to avoid memory leak
             funding_info_event_count = 0
@@ -428,7 +432,8 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
         """
         await self._update_all_funding_payments(fire_event_on_new=False)  # initialization of the timestamps
         while True:
-            self.logger().debug("[funding polling debug] PerpetualDerivativePyBase: funding_payment_polling_loop running")
+            self.logger().debug(f"[funding polling debug] PerpetualDerivativePyBase: funding_payment_polling_loop running on {self.nickname if self.nickname else self.name}, "
+                                    f"trading-pairs: {self.trading_pairs}")
             await self._funding_fee_poll_notifier.wait()
             # There is a chance of race condition when the next await allows for a set() to occur before the clear()
             # Maybe it is better to use a asyncio.Condition() instead of asyncio.Event()?
