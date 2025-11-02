@@ -139,6 +139,7 @@ cdef class OrderBook(PubSub):
     cdef c_apply_trade(self, object trade_event):
         self._last_trade_price = trade_event.price
         self._last_applied_trade = time.perf_counter()
+        # suspicious
         self.c_trigger_event(self.ORDER_BOOK_TRADE_EVENT_TAG, trade_event)
 
     @property

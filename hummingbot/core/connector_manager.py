@@ -37,6 +37,9 @@ class ConnectorManager:
         # Active connectors
         self.connectors: Dict[str, ExchangeBase] = {}
 
+        # Active temp connectors
+        self.temp_connectors: Dict[str, ExchangeBase] = {}
+
     def create_connector(self,
                          connector_name: str,
                          trading_pairs: List[str],
@@ -217,3 +220,96 @@ class ConnectorManager:
                 'balances': connector.get_all_balances() if connector.ready else {}
             }
         return status
+
+    def create_temp_connector(self,
+                         connector_name: str,
+                         trading_pairs: List[str],
+                         trading_required: bool = True,
+                         api_keys: Optional[Dict[str, str]] = None) -> ExchangeBase:
+        """
+        Create and initialize a connector.
+
+        Args:
+            connector_name: Name of the connector (e.g., 'binance', 'kucoin')
+            trading_pairs: List of trading pairs to support
+            trading_required: Whether this connector will be used for trading
+            api_keys: Optional API keys dict
+
+        Returns:
+            ExchangeBase: Initialized connector instance
+        """
+        try:
+            # Check if connector already exists
+            if connector_name in self.temp_connectors:
+                self._logger.warning(f"Temp connector {connector_name} already exists")
+                return self.temp_connectors[connector_name]
+
+            # Handle paper trading connector names
+            if connector_name.endswith("_paper_trade"):
+                base_connector_name = connector_name.replace("_paper_trade", "")
+                conn_setting = AllConnectorSettings.get_connector_settings()[base_connector_name]
+            else:
+                base_connector_name = connector_name
+                conn_setting = AllConnectorSettings.get_connector_settings()[connector_name]
+
+            # Handle paper trading
+            if connector_name.endswith("paper_trade"):
+
+                base_connector = base_connector_name
+                connector = create_paper_trade_market(
+                    base_connector,
+                    self.client_config_map,
+                    trading_pairs
+                )
+
+                # Set paper trade balances if configured
+                paper_trade_account_balance = self.client_config_map.paper_trade.paper_trade_account_balance
+                if paper_trade_account_balance is not None:
+                    for asset, balance in paper_trade_account_balance.items():
+                        connector.set_balance(asset, balance)
+            else:
+                # Create live connector
+                keys = api_keys or Security.api_keys(connector_name)
+                if not keys and not conn_setting.uses_gateway_generic_connector():
+                    raise ValueError(f"API keys required for live trading connector '{connector_name}'. "
+                                     f"Either provide API keys or use a paper trade connector.")
+                read_only_config = ReadOnlyClientConfigAdapter.lock_config(self.client_config_map)
+
+                init_params = conn_setting.conn_init_parameters(
+                    trading_pairs=trading_pairs,
+                    trading_required=trading_required,
+                    api_keys=keys,
+                    client_config_map=read_only_config,
+                )
+
+                connector_class = get_connector_class(connector_name)
+                connector = connector_class(**init_params)
+
+            # Add to active connectors
+            self.temp_connectors[connector_name] = connector
+
+            self._logger.info(f"Created temp connector: {connector_name}")
+
+            return connector
+
+        except Exception as e:
+            self._logger.error(f"Failed to create temp connector {connector_name}: {e}")
+            raise
+
+    def remove_temp_connector(self, connector_name: str) -> bool:
+        """
+        Remove a connector and clean up resources.
+
+        Args:
+            connector_name: Name of the connector to remove
+
+        Returns:
+            bool: True if successfully removed
+        """
+        if connector_name not in self.temp_connectors:
+            self._logger.warning(f"Temp connector {connector_name} not found")
+            return False
+
+        del self.temp_connectors[connector_name]
+        self._logger.info(f"Removed temp connector: {connector_name}")
+        return True
