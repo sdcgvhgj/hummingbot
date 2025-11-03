@@ -411,6 +411,14 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt_on_new": True}
     )
 
+    # Consecutive confirmation controls
+    condition_consecutive_required: int = Field(
+        default=3,
+        json_schema_extra={
+            "prompt": lambda mi: "Open only after N consecutive seconds meeting condition (e.g. 3): ",
+            "prompt_on_new": True}
+    )
+
     @field_validator("connectors", "tokens", mode="before")
     @classmethod
     def validate_sets(cls, v):
@@ -467,6 +475,10 @@ class FundingRateArbitrage(StrategyV2Base):
             ticks = 5
         self._ema_prices = {}
         self._ema_alpha = (Decimal(2) / Decimal(ticks + 1)) if ticks and ticks > 1 else Decimal(1)
+
+        # Per-token condition hit queues for consecutive confirmation
+        self._cond_hits_map = {}
+        self._stop_cond_hits_map = {}
 
     def start(self, clock: Clock, timestamp: float) -> None:
         """
@@ -665,6 +677,66 @@ class FundingRateArbitrage(StrategyV2Base):
         cur_min = self.current_timestamp / 60 % 60
         return cur_min >= 11 and cur_min <= 49
 
+    # ------------------------
+    # Consecutive-confirm helpers
+    # ------------------------
+    def _get_cond_deque(self, token: str):
+        try:
+            n = max(1, int(getattr(self.config, "condition_consecutive_required", 1)))
+        except Exception:
+            n = 1
+        dq = self._cond_hits_map.get(token)
+        if dq is None or (getattr(dq, "maxlen", None) != n):
+            dq = deque(maxlen=n)
+            self._cond_hits_map[token] = dq
+        return dq
+
+    def _note_condition_hit(self, token: str, now_sec: int) -> None:
+        dq = self._get_cond_deque(token)
+        if len(dq) == 0 or dq[-1] != now_sec:
+            dq.append(now_sec)
+        self.logger().debug(f"[consec] cond_hit token={token} now={now_sec} hits={list(dq)}")
+
+    def _has_recent_consecutive_hits(self, token: str, now_sec: int) -> bool:
+        dq = self._get_cond_deque(token)
+        n = dq.maxlen or 1
+        if len(dq) < n:
+            return False
+        for idx in range(n):
+            if dq[-n + idx] != now_sec - (n - 1 - idx):
+                return False
+        self.logger().info(f"[consec] consecutive_check_pass token={token} now={now_sec}")
+        return True
+
+    # Stop-side helpers
+    def _get_stop_cond_deque(self, token: str):
+        try:
+            n = max(1, int(getattr(self.config, "condition_consecutive_required", 1)))
+        except Exception:
+            n = 1
+        dq = self._stop_cond_hits_map.get(token)
+        if dq is None or (getattr(dq, "maxlen", None) != n):
+            dq = deque(maxlen=n)
+            self._stop_cond_hits_map[token] = dq
+        return dq
+
+    def _note_stop_condition_hit(self, token: str, now_sec: int) -> None:
+        dq = self._get_stop_cond_deque(token)
+        if len(dq) == 0 or dq[-1] != now_sec:
+            dq.append(now_sec)
+        self.logger().debug(f"[consec] stop_cond_hit token={token} now={now_sec} hits={list(dq)}")
+
+    def _has_recent_consecutive_stop_hits(self, token: str, now_sec: int) -> bool:
+        dq = self._get_stop_cond_deque(token)
+        n = dq.maxlen or 1
+        if len(dq) < n:
+            return False
+        for idx in range(n):
+            if dq[-n + idx] != now_sec - (n - 1 - idx):
+                return False
+        self.logger().info(f"[consec] stop_consecutive_check_pass token={token} now={now_sec}")
+        return True
+
     def create_actions_proposal(self) -> List[CreateExecutorAction]:
         """
         In this method we are going to evaluate if a new set of positions has to be created for each of the tokens that
@@ -727,6 +799,14 @@ class FundingRateArbitrage(StrategyV2Base):
                 
                 if not self.good_time_to_trade():
                     self.logger().debug(f"[good_time_to_trade] Not good time to trade, skipping creation of executors for {token}")
+                    continue
+
+                # 连续确认：记录本秒达标并检查是否满足最近N秒连续达标
+                now_sec = int(self.current_timestamp)
+                self._note_condition_hit(token, now_sec)
+                if not self._has_recent_consecutive_hits(token, now_sec):
+                    self.logger().debug(
+                        f"[consec] consecutive_check_fail token={token} now={now_sec} N={getattr(self.config, 'condition_consecutive_required', 1)}")
                     continue
 
                 self.logger().info("Starting executors...")
@@ -836,6 +916,17 @@ class FundingRateArbitrage(StrategyV2Base):
             stop_loss_condition = len(funding_arbitrage_info["funding_payments"]) > 1 \
                                 and (rate_2 - rate_1 < self.config.min_funding_profitability \
                                 or (c_price_2 - c_price_1) / c_price_1 < self.config.min_price_profitability)
+
+            # 连续确认：若满足任一止盈/止损条件，则记录本秒命中并检查是否连续N秒
+            stop_condition_now = take_profit_condition or stop_loss_condition
+            if stop_condition_now:
+                now_sec = int(self.current_timestamp)
+                self._note_stop_condition_hit(token, now_sec)
+                if not self._has_recent_consecutive_stop_hits(token, now_sec):
+                    self.logger().debug(
+                        f"[consec] stop_consecutive_check_fail token={token} now={now_sec} N={getattr(self.config, 'condition_consecutive_required', 1)}")
+                    continue
+
             if take_profit_condition:
                 self.logger().info(f"Take profit profitability reached for {token}, stopping executors, "
                                    f"{executors_pnl_by_hand=:.4%}, "
@@ -1094,6 +1185,14 @@ class FundingRateArbitrage(StrategyV2Base):
             for token in list(self.tokens_supported_exchange_map.keys()):
                 if token not in new_tokens_set:
                     self.tokens_supported_exchange_map.pop(token, None)
+
+            # 2.1) 清理连续确认命中队列
+            for token in list(getattr(self, "_cond_hits_map", {}).keys()):
+                if token not in new_tokens_set:
+                    self._cond_hits_map.pop(token, None)
+            for token in list(getattr(self, "_stop_cond_hits_map", {}).keys()):
+                if token not in new_tokens_set:
+                    self._stop_cond_hits_map.pop(token, None)
 
             # 3) 仅保留新代币的失败冷却计数
             self.token_failure_cool_down = {t: self.token_failure_cool_down.get(t, 0) for t in new_tokens_set}
