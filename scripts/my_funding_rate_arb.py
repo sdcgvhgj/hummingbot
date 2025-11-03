@@ -630,7 +630,7 @@ class FundingRateArbitrage(StrategyV2Base):
         valid_connectors = []
         for connector in funding_info_report:
             time_to_funding = funding_info_report[connector].next_funding_utc_timestamp - self.current_timestamp
-            if self.good_time_to_trade(time_to_funding):
+            if time_to_funding / 60 < self.config.max_time_to_next_funding and time_to_funding / 60 > self.config.min_time_to_next_funding:
                 valid_connectors.append(connector)
 
         best_score = None
@@ -917,8 +917,12 @@ class FundingRateArbitrage(StrategyV2Base):
                                 and (rate_2 - rate_1 < self.config.min_funding_profitability \
                                 or (c_price_2 - c_price_1) / c_price_1 < self.config.min_price_profitability)
 
-            # 连续确认：若满足任一止盈/止损条件，则记录本秒命中并检查是否连续N秒
             stop_condition_now = take_profit_condition or stop_loss_condition
+            if stop_condition_now and not self.good_time_to_trade():
+                self.logger().debug(f"[good_time_to_trade] Not good time to trade, skipping stop of executors for {token}")
+                continue
+
+            # 连续确认：若满足任一止盈/止损条件，则记录本秒命中并检查是否连续N秒
             if stop_condition_now:
                 now_sec = int(self.current_timestamp)
                 self._note_stop_condition_hit(token, now_sec)
@@ -931,9 +935,6 @@ class FundingRateArbitrage(StrategyV2Base):
                 self.logger().info(f"Take profit profitability reached for {token}, stopping executors, "
                                    f"{executors_pnl_by_hand=:.4%}, "
                                    f"{funding_payments_pnl_pct=:.4%}")
-                if not self.good_time_to_trade():
-                    self.logger().debug(f"[good_time_to_trade] Not good time to trade, skipping stop of executors for {token}")
-                    continue
                 stopped_tokens.append(token)
                 funding_arbitrage_info['stop_reason'] = "TP"
                 funding_arbitrage_info['stop_time'] = self.current_timestamp
@@ -941,9 +942,6 @@ class FundingRateArbitrage(StrategyV2Base):
                 stop_executor_actions.extend(self.create_stop_executor_action(executors, c_price_1, c_price_2))
             elif stop_loss_condition:
                 self.logger().info(f"Stop loss condition satisfied for {token}, stopping executors")
-                if not self.good_time_to_trade():
-                    self.logger().debug(f"[good_time_to_trade] Not good time to trade, skipping stop of executors for {token}")
-                    continue
                 stopped_tokens.append(token)
                 funding_arbitrage_info['stop_reason'] = "SL"
                 funding_arbitrage_info['stop_time'] = self.current_timestamp
