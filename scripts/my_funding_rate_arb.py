@@ -913,9 +913,21 @@ class FundingRateArbitrage(StrategyV2Base):
             # take_profit_condition = take_profit_condition and not keep_holding_condition
 
             # TODO strengthen stop_loss_condition
-            stop_loss_condition = len(funding_arbitrage_info["funding_payments"]) > 1 \
-                                and (rate_2 - rate_1 < self.config.min_funding_profitability \
-                                or (c_price_2 - c_price_1) / c_price_1 < self.config.min_price_profitability)
+            stop_loss_condition = False
+            stop_loss_type = None
+            if len(funding_arbitrage_info["funding_payments"]) >= 2:
+                rate_diff = rate_2 - rate_1
+                price_diff = (c_price_2 - c_price_1) / c_price_1
+                profitability = rate_diff + price_diff - fee_1 - fee_2
+                if price_diff < 0 and profitability < self.config.min_take_profit:
+                    stop_loss_condition = True
+                    stop_loss_type = "1"
+                elif rate_diff < 0 and profitability < self.config.min_take_profit:
+                    stop_loss_condition = True
+                    stop_loss_type = "2"
+                elif price_diff < self.config.min_price_profitability and rate_diff < self.config.min_funding_profitability:
+                    stop_loss_condition = True
+                    stop_loss_type = "3"
 
             stop_condition_now = take_profit_condition or stop_loss_condition
             if stop_condition_now and not self.good_time_to_trade():
@@ -943,7 +955,7 @@ class FundingRateArbitrage(StrategyV2Base):
             elif stop_loss_condition:
                 self.logger().info(f"Stop loss condition satisfied for {token}, stopping executors")
                 stopped_tokens.append(token)
-                funding_arbitrage_info['stop_reason'] = "SL"
+                funding_arbitrage_info['stop_reason'] = f"SL-{stop_loss_type}"
                 funding_arbitrage_info['stop_time'] = self.current_timestamp
                 self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
                 stop_executor_actions.extend(self.create_stop_executor_action(executors, c_price_1, c_price_2))
