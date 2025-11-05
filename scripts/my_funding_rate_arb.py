@@ -570,13 +570,17 @@ class FundingRateArbitrage(StrategyV2Base):
         prices_and_fees_cache[connector_name] = (price, fee)
         return (price, fee)
 
-    def get_most_trade_profitable_combination(self, prices_and_fees_cache: Dict, funding_info_report: Dict, token: str):
+    def get_most_trade_profitable_combination(self, prices_and_fees_cache: Dict, funding_info_report: Dict, token: str,
+                                                funding_time_check: bool = True):
         # Remove connectors that are far away from funding time
         valid_connectors = []
         for connector in funding_info_report:
             time_to_funding = funding_info_report[connector].next_funding_utc_timestamp - self.current_timestamp
             if time_to_funding / 60 < self.config.max_time_to_next_funding and time_to_funding / 60 > self.config.min_time_to_next_funding:
                 valid_connectors.append(connector)
+
+        if not funding_time_check:
+            valid_connectors = list(funding_info_report.keys())
 
         # TODO: computation delay mesure
 
@@ -588,7 +592,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 if connector_1 != connector_2:
                     time_to_funding_1 = funding_info_report[connector_1].next_funding_utc_timestamp - self.current_timestamp
                     time_to_funding_2 = funding_info_report[connector_2].next_funding_utc_timestamp - self.current_timestamp
-                    if abs(time_to_funding_1 - time_to_funding_2) > 60:
+                    if funding_time_check and abs(time_to_funding_1 - time_to_funding_2) > 60:
                         continue
                     price_1, fee_1 = self.get_price_and_fee_with_cache(prices_and_fees_cache, connector_1, token, TradeType.BUY)
                     price_2, fee_2 = self.get_price_and_fee_with_cache(prices_and_fees_cache, connector_2, token, TradeType.SELL)
@@ -626,12 +630,16 @@ class FundingRateArbitrage(StrategyV2Base):
         self._ema_prices[key] = ema
         return ema
 
-    def get_best_combination_by_heuristic(self, prices_and_fees_cache: Dict, funding_info_report: Dict, token: str):
+    def get_best_combination_by_heuristic(self, prices_and_fees_cache: Dict, funding_info_report: Dict, token: str,
+                                            funding_time_check: bool = True):
         valid_connectors = []
         for connector in funding_info_report:
             time_to_funding = funding_info_report[connector].next_funding_utc_timestamp - self.current_timestamp
             if time_to_funding / 60 < self.config.max_time_to_next_funding and time_to_funding / 60 > self.config.min_time_to_next_funding:
                 valid_connectors.append(connector)
+
+        if not funding_time_check:
+            valid_connectors = list(funding_info_report.keys())
 
         best_score = None
         best = None
@@ -641,7 +649,7 @@ class FundingRateArbitrage(StrategyV2Base):
                     continue
                 t1 = funding_info_report[connector_1].next_funding_utc_timestamp - self.current_timestamp
                 t2 = funding_info_report[connector_2].next_funding_utc_timestamp - self.current_timestamp
-                if abs(t1 - t2) > 60:
+                if funding_time_check and abs(t1 - t2) > 60:
                     continue
                 price_1, fee_1 = self.get_price_and_fee_with_cache(prices_and_fees_cache, connector_1, token, TradeType.BUY)
                 price_2, fee_2 = self.get_price_and_fee_with_cache(prices_and_fees_cache, connector_2, token, TradeType.SELL)
@@ -1030,7 +1038,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 best_paths_info = {"Token": token}
                 prices_and_fees_cache = dict()
                 best_combination = self.get_most_trade_profitable_combination(prices_and_fees_cache, \
-                                                                               funding_info_report, token)
+                                                                               funding_info_report, token, funding_time_check=False)
                 if best_combination:
                     connector_1, connector_2, trade_side, expected_profitability, \
                         rate_1, rate_2, price_1, price_2, fee_1, fee_2 = best_combination
