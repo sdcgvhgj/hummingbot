@@ -605,14 +605,17 @@ class FundingRateArbitrage(StrategyV2Base):
                     # sell 10u / p1 amount at price p1, returns 10u
                     # buy 10u / p1 amount at price p2', costs 10u / p1 * p2' = 10u
                     # pnl_percent = p2 / p1 - 1 = (p2 - p1) / p1
-                    price_profit = (price_2 - price_1) / price_1
+                    i_price_1 = funding_info_report[connector_1].index_price
+                    i_price_2 = funding_info_report[connector_2].index_price
+                    i_price_diff = i_price_2 - i_price_1
+                    price_profit = (price_2 - price_1 - i_price_diff) / price_1
                     funding_rate_profit = rate_2 - rate_1
                     trade_profit = price_profit + funding_rate_profit - fee_1 * 2 - fee_2 * 2
                     if float(trade_profit) > float(highest_profitability):
                         trade_side = TradeType.BUY
                         highest_profitability = trade_profit
                         best_combination = (connector_1, connector_2, trade_side, trade_profit, \
-                                            rate_1, rate_2, price_1, price_2, fee_1, fee_2)
+                                            rate_1, rate_2, price_1, price_2, fee_1, fee_2, i_price_diff)
         return best_combination
 
     def _ema_key(self, connector_name: str, trading_pair: str) -> str:
@@ -655,18 +658,23 @@ class FundingRateArbitrage(StrategyV2Base):
                 price_2, fee_2 = self.get_price_and_fee_with_cache(prices_and_fees_cache, connector_2, token, TradeType.SELL)
                 rate_1 = funding_info_report[connector_1].rate
                 rate_2 = funding_info_report[connector_2].rate
+
+                i_price_1 = funding_info_report[connector_1].index_price
+                i_price_2 = funding_info_report[connector_2].index_price
+                i_price_diff = i_price_2 - i_price_1
+
                 # 启发式打分：单位时间的预期收益
                 time_to_funding = max(Decimal(60), Decimal(max(t1, t2)))  # 至少按60秒防止分母过小
-                score = self.heuristic_profitability_evaluation(price_1, price_2, fee_1, fee_2, rate_1, rate_2, time_to_funding)
+                score = self.heuristic_profitability_evaluation(price_1, price_2, fee_1, fee_2, rate_1, rate_2, time_to_funding, i_price_diff)
 
                 # 交易期望收益（用于后续阈值判断）
-                price_profit = (price_2 - price_1) / price_1
+                price_profit = (price_2 - price_1 - i_price_diff) / price_1
                 funding_rate_profit = rate_2 - rate_1
                 trade_profit = price_profit + funding_rate_profit - fee_1 * 2 - fee_2 * 2
 
                 if best_score is None or float(score) > float(best_score):
                     best_score = score
-                    best = (connector_1, connector_2, TradeType.BUY, trade_profit, rate_1, rate_2, price_1, price_2, fee_1, fee_2)
+                    best = (connector_1, connector_2, TradeType.BUY, trade_profit, rate_1, rate_2, price_1, price_2, fee_1, fee_2, i_price_diff)
 
         return best_score, best
     
@@ -675,8 +683,8 @@ class FundingRateArbitrage(StrategyV2Base):
         avail_usd = float(connector.available_balances.get(self.quote_markets_map.get(connector_name, 'USDT'), 0))
         return avail_usd >= float(self.config.position_size_quote) / float(self.config.leverage), avail_usd
 
-    def heuristic_profitability_evaluation(self, price_1, price_2, fee_1, fee_2, rate_1, rate_2, time_to_funding):
-        price_profit = (price_2 - price_1) / price_1 - self.config.min_price_profitability
+    def heuristic_profitability_evaluation(self, price_1, price_2, fee_1, fee_2, rate_1, rate_2, time_to_funding, i_price_diff):
+        price_profit = (price_2 - price_1 - i_price_diff) / price_1 - self.config.min_price_profitability
         funding_rate_profit = rate_2 - rate_1
         profit_rate = (price_profit + funding_rate_profit - fee_1 * 2 - fee_2 * 2) / time_to_funding
         return profit_rate
@@ -780,7 +788,7 @@ class FundingRateArbitrage(StrategyV2Base):
         # 3) 逐个尝试原有阈值逻辑，符合则开仓并返回
         for token, _, best_combination in token_rankings:
             connector_1, connector_2, trade_side, expected_profitability, \
-                rate_1, rate_2, price_1, price_2, fee_1, fee_2 = best_combination
+                rate_1, rate_2, price_1, price_2, fee_1, fee_2, i_price_diff = best_combination
 
             if expected_profitability >= self.config.min_trade_profitability \
                 and rate_2 - rate_1 >= self.config.min_funding_profitability:
@@ -796,6 +804,7 @@ class FundingRateArbitrage(StrategyV2Base):
                     f"Best Combination: {token} | {connector_1} | {connector_2} | {trade_side} | "
                     f"rate_1={self.format_percent(rate_1)} | rate_2={self.format_percent(rate_2)} | "
                     f"price_1={price_1:.7f} | price_2={price_2:.7f} | "
+                    f"i_price_diff={i_price_diff:.7f} | "
                     f"fee_1={self.format_percent(fee_1)} | fee_2={self.format_percent(fee_2)} | "
                     f"balance_1={balance_1:.3f} | balance_2={balance_2:.3f} | "
                     f"expected_profitability={self.format_percent(expected_profitability)} ")
@@ -827,6 +836,7 @@ class FundingRateArbitrage(StrategyV2Base):
                     "rate_2": rate_2,
                     "price_1": price_1,
                     "price_2": price_2,
+                    "i_price_diff": i_price_diff,
                     "fee_1": fee_1,
                     "fee_2": fee_2,
                     "expected_profitability": expected_profitability,
@@ -911,6 +921,7 @@ class FundingRateArbitrage(StrategyV2Base):
             funding_info_report = self.get_funding_info_by_token(token)
             rate_1 = funding_info_report[connector_1].rate
             rate_2 = funding_info_report[connector_2].rate
+            i_price_diff = funding_info_report[connector_2].index_price - funding_info_report[connector_1].index_price
             take_profit_condition = executors_pnl_by_hand + funding_payments_pnl_pct > \
                                     self.config.min_take_profit + fee_1 + fee_2
             keep_holding_condition = rate_2 - rate_1 > trade_pnl_by_had and rate_2 - rate_1 > 0
@@ -925,7 +936,7 @@ class FundingRateArbitrage(StrategyV2Base):
             stop_loss_type = None
             if len(funding_arbitrage_info["funding_payments"]) >= 2:
                 rate_diff = rate_2 - rate_1
-                price_diff = (c_price_2 - c_price_1) / c_price_1
+                price_diff = (c_price_2 - c_price_1 - i_price_diff) / c_price_1
                 profitability = rate_diff + price_diff - fee_1 - fee_2
                 if price_diff < 0 and profitability < self.config.min_take_profit:
                     stop_loss_condition = True
@@ -1041,9 +1052,10 @@ class FundingRateArbitrage(StrategyV2Base):
                                                                                funding_info_report, token, funding_time_check=False)
                 if best_combination:
                     connector_1, connector_2, trade_side, expected_profitability, \
-                        rate_1, rate_2, price_1, price_2, fee_1, fee_2 = best_combination
+                        rate_1, rate_2, price_1, price_2, fee_1, fee_2, i_price_diff = best_combination
                     best_paths_info["Best Path"] = f"{connector_1}_{connector_2}"
                     best_paths_info["Pirce Diff"] = self.format_percent((price_2 - price_1) / price_1)
+                    best_paths_info["Index Diff"] = self.format_percent(i_price_diff / price_1)
                     best_paths_info["Rate Diff"] = self.format_percent((rate_2 - rate_1))
                     best_paths_info["Fees"] = self.format_percent((fee_1 + fee_2))
                     best_paths_info["Trade Profit"] = self.format_percent(expected_profitability)
@@ -1303,17 +1315,21 @@ class FundingRateArbitrage(StrategyV2Base):
                                 order_side=TradeType.BUY, amount=amt_2, price=price_2, is_maker=False,
                                 position_action=PositionAction.OPEN).percent
 
+                            i_price_1 = f1.index_price
+                            i_price_2 = f2.index_price
+                            i_price_diff = i_price_2 - i_price_1
+
                             # Direction: BUY on c1, SELL on c2
-                            price_profit = (price_2 - price_1) / price_1
+                            price_profit = (price_2 - price_1 - i_price_diff) / price_1
                             funding_profit = f2.rate - f1.rate
                             trade_profit = price_profit + funding_profit - fee_1 * 2 - fee_2 * 2
 
-                            if funding_profit >= self.config.min_funding_profitability:
-                                results.append({
-                                    "base": base, "buy": c1, "sell": c2, "p_buy": p1, "p_sell": p2,
-                                    "profit": trade_profit, "rates": (f1.rate, f2.rate), "prices": (price_1, price_2),
-                                    "fees": (fee_1, fee_2)
-                                })
+                            # if funding_profit >= self.config.min_funding_profitability:
+                            results.append({
+                                "base": base, "buy": c1, "sell": c2, "p_buy": p1, "p_sell": p2,
+                                "profit": trade_profit, "rates": (f1.rate, f2.rate), "prices": (price_1, price_2),
+                                "fees": (fee_1, fee_2)
+                            })
                         except Exception as e:
                             self.logger().debug(f"[dynamic-topk] Skip {base} ({c1}->{c2}) due to error: {e}")
 
