@@ -607,7 +607,7 @@ class FundingRateArbitrage(StrategyV2Base):
                     # pnl_percent = p2 / p1 - 1 = (p2 - p1) / p1
                     i_price_1 = funding_info_report[connector_1].index_price
                     i_price_2 = funding_info_report[connector_2].index_price
-                    i_price_diff = i_price_2 - i_price_1
+                    i_price_diff = max(0, i_price_2 - i_price_1)
                     price_profit = (price_2 - price_1 - i_price_diff) / price_1
                     funding_rate_profit = rate_2 - rate_1
                     trade_profit = price_profit + funding_rate_profit - fee_1 * 2 - fee_2 * 2
@@ -661,7 +661,7 @@ class FundingRateArbitrage(StrategyV2Base):
 
                 i_price_1 = funding_info_report[connector_1].index_price
                 i_price_2 = funding_info_report[connector_2].index_price
-                i_price_diff = i_price_2 - i_price_1
+                i_price_diff = max(0, i_price_2 - i_price_1)
 
                 # 启发式打分：单位时间的预期收益
                 time_to_funding = max(Decimal(60), Decimal(max(t1, t2)))  # 至少按60秒防止分母过小
@@ -684,6 +684,7 @@ class FundingRateArbitrage(StrategyV2Base):
         return avail_usd >= float(self.config.position_size_quote) / float(self.config.leverage), avail_usd
 
     def heuristic_profitability_evaluation(self, price_1, price_2, fee_1, fee_2, rate_1, rate_2, time_to_funding, i_price_diff):
+        i_price_diff = max(0, i_price_diff)
         price_profit = (price_2 - price_1 - i_price_diff) / price_1 - self.config.min_price_profitability
         funding_rate_profit = rate_2 - rate_1
         profit_rate = (price_profit + funding_rate_profit - fee_1 * 2 - fee_2 * 2) / time_to_funding
@@ -805,6 +806,7 @@ class FundingRateArbitrage(StrategyV2Base):
                     f"rate_1={self.format_percent(rate_1)} | rate_2={self.format_percent(rate_2)} | "
                     f"price_1={price_1:.7f} | price_2={price_2:.7f} | "
                     f"i_price_diff={i_price_diff:.7f} | "
+                    f"i_price_diff_pct={self.format_percent(i_price_diff/price_1)} | "
                     f"fee_1={self.format_percent(fee_1)} | fee_2={self.format_percent(fee_2)} | "
                     f"balance_1={balance_1:.3f} | balance_2={balance_2:.3f} | "
                     f"expected_profitability={self.format_percent(expected_profitability)} ")
@@ -921,7 +923,7 @@ class FundingRateArbitrage(StrategyV2Base):
             funding_info_report = self.get_funding_info_by_token(token)
             rate_1 = funding_info_report[connector_1].rate
             rate_2 = funding_info_report[connector_2].rate
-            i_price_diff = funding_info_report[connector_2].index_price - funding_info_report[connector_1].index_price
+
             take_profit_condition = executors_pnl_by_hand + funding_payments_pnl_pct > \
                                     self.config.min_take_profit + fee_1 + fee_2
             keep_holding_condition = rate_2 - rate_1 > trade_pnl_by_had and rate_2 - rate_1 > 0
@@ -930,6 +932,10 @@ class FundingRateArbitrage(StrategyV2Base):
                 self.logger().info("TP reached but holding")
             # do not use keep_holding_condition for now
             # take_profit_condition = take_profit_condition and not keep_holding_condition
+
+            # do not use realtime index price diff for stop loss
+            # i_price_diff = funding_info_report[connector_2].index_price - funding_info_report[connector_1].index_price
+            i_price_diff = funding_arbitrage_info['i_price_diff']
 
             # TODO strengthen stop_loss_condition
             stop_loss_condition = False
@@ -1317,7 +1323,7 @@ class FundingRateArbitrage(StrategyV2Base):
 
                             i_price_1 = f1.index_price
                             i_price_2 = f2.index_price
-                            i_price_diff = i_price_2 - i_price_1
+                            i_price_diff = max(0, i_price_2 - i_price_1)
 
                             # Direction: BUY on c1, SELL on c2
                             price_profit = (price_2 - price_1 - i_price_diff) / price_1

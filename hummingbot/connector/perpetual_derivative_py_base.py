@@ -2,7 +2,7 @@ import asyncio
 from abc import ABC, abstractmethod
 from decimal import Decimal
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from hummingbot.connector.constants import s_decimal_0, s_decimal_NaN
 from hummingbot.connector.derivative.perpetual_budget_checker import PerpetualBudgetChecker
@@ -374,7 +374,14 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
     async def _listen_for_funding_info(self):
         await self._init_funding_info()
         while True:
-            await asyncio.sleep(60) # 1 minute
+            now = datetime.utcnow()
+            if now.microsecond < 500000:
+                next_run = now.replace(microsecond=500000)
+            else:
+                next_run = (now.replace(microsecond=0) + timedelta(seconds=1)).replace(microsecond=500000)
+            sleep_secs = (next_run - now).total_seconds()
+            if sleep_secs > 0:
+                await asyncio.sleep(sleep_secs)
             self.logger().debug(f"[funding polling debug] PerpetualDerivativePyBase: funding_info_listener_task running on {self.nickname if self.nickname else self.name}, "
                                     f"trading-pairs: {self.trading_pairs}")
             await self._update_funding_info()
@@ -401,9 +408,11 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
             pretty_time = datetime.utcfromtimestamp(new_funding_info.next_funding_utc_timestamp).strftime('%Y-%m-%d %H:%M:%S UTC')
             self.logger().debug(
                 f"[funding info REST] updated for {trading_pair} on domain {self._domain}: "
-                f"rate={new_funding_info.rate:.10f}, "
                 f"next_funding_utc_timestamp={new_funding_info.next_funding_utc_timestamp} ({pretty_time}), "
-                f"mark_price={new_funding_info.mark_price:.10f}"
+                f"mark_price={new_funding_info.mark_price:.10f}, "
+                f"index_price={new_funding_info.index_price:.10f}, "
+                f"basis_pct={(new_funding_info.index_price - new_funding_info.mark_price)/new_funding_info.mark_price:>7.3%}, "
+                f"rate={new_funding_info.rate:>7.3%}, "
             )
             funding_info = self._perpetual_trading._funding_info[trading_pair]
             funding_info.update(FundingInfoUpdate(
@@ -420,9 +429,11 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
             pretty_time = datetime.utcfromtimestamp(funding_info.next_funding_utc_timestamp).strftime('%Y-%m-%d %H:%M:%S UTC')
             self.logger().debug(
                 f"[funding info REST] initialized for {trading_pair} on domain {self._domain}: "
-                f"rate={funding_info.rate:.10f}, "
                 f"next_funding_utc_timestamp={funding_info.next_funding_utc_timestamp} ({pretty_time}), "
                 f"mark_price={funding_info.mark_price:.10f}"
+                f"index_price={funding_info.index_price:.10f}, "
+                f"basis_pct={(funding_info.index_price - funding_info.mark_price)/funding_info.mark_price:>7.3%}, "
+                f"rate={funding_info.rate:>7.3%}, "
             )
             self._perpetual_trading.initialize_funding_info(funding_info)
 

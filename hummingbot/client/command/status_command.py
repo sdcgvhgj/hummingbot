@@ -129,7 +129,7 @@ class StatusCommand:
                 self.app.live_updates = True
                 while self.app.live_updates and self.trading_core.strategy:
                     await self.cls_display_delay(
-                        await self.strategy_status(live=True) + "\n\n Press escape key to stop update.", 0.1
+                        await self.strategy_status(live=True) + "\n\n Press escape key to stop update.", 1.0
                     )
                 self.app.live_updates = False
                 self.notify("Stopped live status display update.")
