@@ -467,6 +467,8 @@ class FundingRateArbitrage(StrategyV2Base):
         self._latest_topk_debug = []
         self.is_stopping_creating_actions = False
         self._mem_monitor = None
+        self._status_dump_thread = None
+        self._status_dump_stop = threading.Event()
 
         # EMA price smoothing state
         try:
@@ -508,6 +510,17 @@ class FundingRateArbitrage(StrategyV2Base):
                     self._dynamic_scan_task = asyncio.create_task(self._dynamic_scan_loop())
             except Exception as e:
                 self.logger().error(f"[dynamic-topk] Failed to start scanner: {e}")
+        # Start status dump thread (write format_status to disk every 60s)
+        try:
+            if self._status_dump_thread is None or not self._status_dump_thread.is_alive():
+                self._status_dump_stop.clear()
+                self._status_dump_thread = threading.Thread(
+                    target=self._status_dump_loop, name="StatusDump", daemon=True
+                )
+                self._status_dump_thread.start()
+                self.logger().info("[status-dump] Status dump thread started (interval=60s)")
+        except Exception as e:
+            self.logger().warning(f"[status-dump] Failed to start status dump thread: {e}")
 
     def token_supported_exchange(self, token: str):
         if token in self.tokens_supported_exchange_map:
@@ -1264,6 +1277,57 @@ class FundingRateArbitrage(StrategyV2Base):
             self.logger().info(f"[dynamic-topk] Cleaned caches for tokens: {','.join(sorted(new_tokens_set))}")
         except Exception as e:
             self.logger().warning(f"[dynamic-topk] Token update cleanup failed: {e}")
+
+    def _status_dump_loop(self):
+        """
+        后台线程：每60秒将 format_status() 结果落盘到 logs/status/{script}_status.log
+        首次启动会立即落盘一次。
+        """
+        try:
+            dump_dir = Path.cwd() / "logs" / "status"
+            dump_dir.mkdir(parents=True, exist_ok=True)
+            file_name = f"{getattr(self.config, 'script_file_name', Path(__file__).name).replace('.py','')}_status.log"
+            dump_path = dump_dir / file_name
+        except Exception as e:
+            self.logger().warning(f"[status-dump] Init failed: {e}")
+            return
+
+        def _write_once():
+            try:
+                ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+                content = self.format_status()
+                with open(dump_path, "a", encoding="utf-8") as fh:
+                    fh.write(f"\n===== {ts} =====\n")
+                    fh.write(content)
+                    fh.write("\n")
+                self.logger().debug(f"[status-dump] Wrote status to {dump_path}")
+            except Exception as e:
+                self.logger().warning(f"[status-dump] Write failed: {e}")
+
+        # 首次立即写一次
+        _write_once()
+        # 之后每60秒写一次
+        while not self._status_dump_stop.wait(60):
+            _write_once()
+
+    async def on_stop(self):
+        # 停止状态落盘线程
+        try:
+            self._status_dump_stop.set()
+            th = self._status_dump_thread
+            if th is not None and th.is_alive():
+                th.join(timeout=2.0)
+                self.logger().info("[status-dump] Status dump thread stopped")
+        except Exception as e:
+            self.logger().warning(f"[status-dump] Failed to stop thread: {e}")
+        # 停止内存监控
+        try:
+            if self._mem_monitor is not None:
+                self._mem_monitor.stop()
+        except Exception:
+            pass
+
+        await super().on_stop()
 
     async def _compute_topk_via_rest(self):
         """
