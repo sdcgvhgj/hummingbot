@@ -402,6 +402,19 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Trigger snapshot when RSS grows by MB (0=disable, e.g. 256): ",
             "prompt_on_new": True}
     )
+    # Telegram 通知（可选）
+    telegram_bot_token: str = Field(
+        default="",
+        json_schema_extra={
+            "prompt": lambda mi: "Telegram bot token (optional, leave empty to disable): ",
+            "prompt_on_new": True}
+    )
+    telegram_chat_id: str = Field(
+        default="",
+        json_schema_extra={
+            "prompt": lambda mi: "Telegram chat id (optional, leave empty to disable): ",
+            "prompt_on_new": True}
+    )
 
     # Price smoothing controls
     ema_ticks: int = Field(
@@ -482,6 +495,9 @@ class FundingRateArbitrage(StrategyV2Base):
         self._cond_hits_map = {}
         self._stop_cond_hits_map = {}
 
+        self.status_active_arbitrage_info = None
+        self.status_stopped_arbitrage_info = None
+
     def start(self, clock: Clock, timestamp: float) -> None:
         """
         Start the strategy.
@@ -512,13 +528,9 @@ class FundingRateArbitrage(StrategyV2Base):
                 self.logger().error(f"[dynamic-topk] Failed to start scanner: {e}")
         # Start status dump thread (write format_status to disk every 60s)
         try:
-            if self._status_dump_thread is None or not self._status_dump_thread.is_alive():
-                self._status_dump_stop.clear()
-                self._status_dump_thread = threading.Thread(
-                    target=self._status_dump_loop, name="StatusDump", daemon=True
-                )
-                self._status_dump_thread.start()
+            if self._status_dump_thread is None or self._status_dump_thread.done():
                 self.logger().info("[status-dump] Status dump thread started (interval=60s)")
+                self._status_dump_thread = asyncio.create_task(self._status_dump_loop())
         except Exception as e:
             self.logger().warning(f"[status-dump] Failed to start status dump thread: {e}")
 
@@ -918,7 +930,8 @@ class FundingRateArbitrage(StrategyV2Base):
                 continue
             connector_1 = funding_arbitrage_info["connector_1"]
             connector_2 = funding_arbitrage_info["connector_2"]
-            if self.check_is_liquidated(connector_1, connector_2, token):
+            if self.current_timestamp - funding_arbitrage_info['start_time'] > 60 and \
+                        self.check_is_liquidated(connector_1, connector_2, token):
                 self.logger().debug(f"Liquidation detected for {token}, stopping executors")
                 stopped_tokens.append(token)
                 funding_arbitrage_info['stop_reason'] = "LIQ"
@@ -1060,6 +1073,9 @@ class FundingRateArbitrage(StrategyV2Base):
     def format_percent(self, x) -> str:
         return f"{x:>7.3%}"
     
+    def format_currency(self, x) -> str:
+        return f"{x:>7.3f}"
+    
     def format_time(self, x) -> str:
         sign = ' ' if x > 0 else '-'
         x = abs(x)
@@ -1068,6 +1084,47 @@ class FundingRateArbitrage(StrategyV2Base):
         
         return f"{sign}{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
 
+    def format_utc(self, x) -> str:
+        utc_time = datetime.utcfromtimestamp(x).strftime('%Y-%m-%d %H:%M:%S UTC')
+        return utc_time
+
+    # ------------------------
+    # Telegram helpers (optional)
+    # ------------------------
+    def _send_telegram(self, text: str) -> None:
+        try:
+            token = getattr(self.config, "telegram_bot_token", "") or os.getenv("TG_BOT_TOKEN", "")
+            chat_id = getattr(self.config, "telegram_chat_id", "") or os.getenv("TG_CHAT_ID", "")
+            if not token or not chat_id:
+                return
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            import urllib.request
+            import urllib.parse
+            data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
+            req = urllib.request.Request(url, data=data)
+            urllib.request.urlopen(req, timeout=5)
+        except Exception as e:
+            try:
+                self.logger().debug(f"[tg] send failed: {e}")
+            except Exception:
+                pass
+
+    def get_balances_info(self):
+        balances_info = [{ "\\": "Avail", "All": 0 }, { "\\": "Total", "All": 0 }]
+        for connector_name in self.connectors.keys():
+            avail_usd = self.connectors[connector_name].available_balances.get(self.quote_markets_map.get(connector_name, 'USDT'), 0)
+            total_usd = self.connectors[connector_name].get_balance(self.quote_markets_map.get(connector_name, 'USDT'))
+            avail_usd = float(avail_usd)
+            total_usd = float(total_usd)
+            balances_info[0][connector_name.replace("_perpetual", "")] = avail_usd
+            balances_info[1][connector_name.replace("_perpetual", "")] = total_usd
+            balances_info[0]["All"] += avail_usd
+            balances_info[1]["All"] += total_usd
+        for item in balances_info:
+            for key in item.keys():
+                if key != "\\":
+                    item[key] = self.format_currency(item[key])
+        return balances_info
 
     def format_status(self) -> str:
         original_status = super().format_status()
@@ -1106,24 +1163,17 @@ class FundingRateArbitrage(StrategyV2Base):
 
             funding_rate_status.append(f"\nMin Trade Profitability: {self.config.min_trade_profitability:.2%}")
 
-            balances_info = [{ "Currency": "Avail USDT" }, { "Currency": "Total USDT" }]
-            for connector_name in self.connectors.keys():
-                avail_usd = self.connectors[connector_name].available_balances.get(self.quote_markets_map.get(connector_name, 'USDT'), 0)
-                all_usd = self.connectors[connector_name].get_balance(self.quote_markets_map.get(connector_name, 'USDT'))
-                balances_info[0][connector_name] = avail_usd
-                balances_info[1][connector_name] = all_usd
-
             funding_rate_status.append("Funding Rate Info")
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_funding_info), table_format="psql",))
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_best_paths), table_format="psql",))
             funding_rate_status.append("USDT Balances")
-            funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(balances_info), table_format="psql"))
+            funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(self.get_balances_info()), table_format="psql"))
 
             funding_rate_status.append(f"\nActive Funding Arbitrages:")
             active_arbitrage_info = []
             active_arbitrage_debug = []
             for token, funding_arbitrage_info in self.active_funding_arbitrages.items():
-                arbitrage_info = { "token": token }
+                arbitrage_info = { "Token": token }
                 arbitrage_info["Connector 1"] = funding_arbitrage_info["connector_1"]
                 arbitrage_info["Connector 2"] = funding_arbitrage_info["connector_2"]
                 funding_payments_pnl = \
@@ -1132,7 +1182,9 @@ class FundingRateArbitrage(StrategyV2Base):
                 price_1, price_2 = funding_arbitrage_info["price_1"], funding_arbitrage_info["price_2"]
                 rate_1, rate_2 = funding_arbitrage_info["rate_1"], funding_arbitrage_info["rate_2"]
                 fee_1, fee_2 = funding_arbitrage_info["fee_1"], funding_arbitrage_info["fee_2"]
+                i_price_diff = funding_arbitrage_info["i_price_diff"]
                 arbitrage_info["Px Diff"] = self.format_percent((price_2 - price_1) / price_1)
+                arbitrage_info["Ix Diff"] = self.format_percent(i_price_diff / price_1)
                 arbitrage_info["Fd Diff"] = self.format_percent(rate_2 - rate_1)
                 # arbitrage_info["Fee1+Fee2"] = self.format_percent(fee_1 + fee_2)
                 c_price_1, _ = self.get_price_and_fee_with_cache( \
@@ -1176,6 +1228,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 arbitrage_debug["create_t2"] = f"{divmod(create_t2,60)[1]:.4f}"
                 arbitrage_debug["complete_t2"] = f"{divmod(complete_t2,60)[1]:.4f}"
                 active_arbitrage_debug.append(arbitrage_debug)
+            self.status_active_arbitrage_info = active_arbitrage_info
             funding_rate_status.append( \
                 format_df_for_printout(df=pd.DataFrame(active_arbitrage_info), table_format="psql",))
             funding_rate_status.append( \
@@ -1185,11 +1238,18 @@ class FundingRateArbitrage(StrategyV2Base):
             stopped_arbitrage_info = []
             for token, funding_arbitrage_infos in self.stopped_funding_arbitrages.items():
                 for funding_arbitrage_info in funding_arbitrage_infos:
-                    arbitrage_info = {'token': token}
+                    arbitrage_info = {'Token': token}
                     connector_1 = funding_arbitrage_info["connector_1"]
                     connector_2 = funding_arbitrage_info["connector_2"]
                     arbitrage_info['Conn 1'] = connector_1.replace('_perpetual', '')
                     arbitrage_info['Conn 2'] = connector_2.replace('_perpetual', '')
+                    price_1, price_2 = funding_arbitrage_info["price_1"], funding_arbitrage_info["price_2"]
+                    rate_1, rate_2 = funding_arbitrage_info["rate_1"], funding_arbitrage_info["rate_2"]
+                    fee_1, fee_2 = funding_arbitrage_info["fee_1"], funding_arbitrage_info["fee_2"]
+                    i_price_diff = funding_arbitrage_info["i_price_diff"]
+                    arbitrage_info["Px Diff"] = self.format_percent((price_2 - price_1) / price_1)
+                    arbitrage_info["Ix Diff"] = self.format_percent(i_price_diff / price_1)
+                    arbitrage_info["Fd Diff"] = self.format_percent(rate_2 - rate_1)
                     executors = self.get_executors(funding_arbitrage_info["executors_ids"])
                     if len(executors) != 2:
                         continue
@@ -1224,6 +1284,8 @@ class FundingRateArbitrage(StrategyV2Base):
                         sum(funding_payment.amount for funding_payment in funding_arbitrage_info["funding_payments"]) \
                         / self.config.position_size_quote
                     executors_pnl = sum(executor.net_pnl_pct for executor in executors)
+                    closed_ex = list(ex.close_type for ex in executors if ex.close_type)
+                    all_executors_closed = len(closed_ex) == len(executors)
                     arbitrage_info['Fd Pnl'] = self.format_percent(funding_payments_pnl)
                     arbitrage_info['Td Pnl'] = self.format_percent(executors_pnl)
                     arbitrage_info['SR'] = funding_arbitrage_info['stop_reason']
@@ -1231,8 +1293,10 @@ class FundingRateArbitrage(StrategyV2Base):
                     arbitrage_info['Hold Time'] = hold_time
                     stop_time = datetime.utcfromtimestamp(funding_arbitrage_info['stop_time']).strftime('%Y-%m-%d %H:%M:%S UTC')
                     arbitrage_info['Stop Time'] = stop_time
+                    arbitrage_info['Ex Closed'] = all_executors_closed
 
                     stopped_arbitrage_info.append(arbitrage_info)
+            self.status_stopped_arbitrage_info = stopped_arbitrage_info
             funding_rate_status.append( \
                 format_df_for_printout(df=pd.DataFrame(stopped_arbitrage_info), table_format="psql",))
         return original_status + "\n".join(funding_rate_status)
@@ -1278,9 +1342,10 @@ class FundingRateArbitrage(StrategyV2Base):
         except Exception as e:
             self.logger().warning(f"[dynamic-topk] Token update cleanup failed: {e}")
 
-    def _status_dump_loop(self):
+    async def _status_dump_loop(self):
         """
         后台线程：每60秒将 format_status() 结果落盘到 logs/status/{script}_status.log
+        同时发送 Telegram 通知。
         首次启动会立即落盘一次。
         """
         try:
@@ -1292,6 +1357,8 @@ class FundingRateArbitrage(StrategyV2Base):
             self.logger().warning(f"[status-dump] Init failed: {e}")
             return
 
+        sent_stopped_arbitrages = set()
+
         def _write_once():
             try:
                 ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -1301,22 +1368,74 @@ class FundingRateArbitrage(StrategyV2Base):
                     fh.write(content)
                     fh.write("\n")
                 self.logger().debug(f"[status-dump] Wrote status to {dump_path}")
+
+                # send telegram notification
+                if self.status_stopped_arbitrage_info:
+                    telegram_message = f"{self.format_utc(self.current_timestamp)}: \n"
+                    new_stopped_arbitrages_found = False
+                    for item in self.status_stopped_arbitrage_info:
+                        key = item['Stop Time'] + item['Token']
+                        if key not in sent_stopped_arbitrages and item['Ex Closed']:
+                            sent_stopped_arbitrages.add(key)
+                            telegram_message += "**New Stopped Funding Arbitrages**\n"
+                            telegram_message += f"Token      : {item['Token']}\n"
+                            telegram_message += f"Conn 1     : {item['Conn 1']}\n"
+                            telegram_message += f"Conn 2     : {item['Conn 2']}\n"
+                            telegram_message += f"Px Diff    : {item['Px Diff']}\n"
+                            telegram_message += f"Ix Diff    : {item['Ix Diff']}\n"
+                            telegram_message += f"Fd Diff    : {item['Fd Diff']}\n"
+                            telegram_message += f"Open Delay : {item['Open Delay']}\n"
+                            telegram_message += f"Open Sllip : {item['Open Sllipage']}\n"
+                            telegram_message += f"Close Delay: {item['Close Delay']}\n"
+                            telegram_message += f"Close Sllip: {item['Close Sllipage']}\n"
+                            telegram_message += f"Close Type : {item['Close Type']}\n"
+                            telegram_message += f"Fd Pnl     : {item['Fd Pnl']}\n"
+                            telegram_message += f"Td Pnl     : {item['Td Pnl']}\n"
+                            telegram_message += f"SR         : {item['SR']}\n"
+                            telegram_message += f"Hold Time  : {item['Hold Time']}\n"
+                            telegram_message += f"Stop Time  : {item['Stop Time']}\n"
+                            new_stopped_arbitrages_found = True
+                            break
+                    if new_stopped_arbitrages_found:
+                        if self.status_active_arbitrage_info:
+                            telegram_message += f"**Current Active Arbitrages**\n"
+                            for active_arbitrage_info in self.status_active_arbitrage_info:
+                                telegram_message += f"Hold Time : {active_arbitrage_info['Hold Time']} | "
+                                telegram_message += f"Token : {active_arbitrage_info['Token']}\n"
+                        balances_info = self.get_balances_info()
+                        telegram_message += "**Current USDT Balances**\n"
+                        for connector_name in balances_info[0].keys():
+                            telegram_message += f"{connector_name:10}\t : {balances_info[0][connector_name]:10} | {balances_info[1][connector_name]:10}\n"
+                        self._send_telegram(telegram_message)
             except Exception as e:
                 self.logger().warning(f"[status-dump] Write failed: {e}")
 
         # 首次立即写一次
+        while not self.ready_to_trade:
+            self.logger().debug(f"[status-dump] Waiting for ready to trade...")
+            await asyncio.sleep(1)
+            continue
         _write_once()
+        balances_info = self.get_balances_info()
+        telegram_message = f"{self.format_utc(self.current_timestamp)}: \n"
+        telegram_message += "**Starting USDT Balances**\n"
+        for connector_name in balances_info[0].keys():
+            telegram_message += f"{connector_name:10}\t : {balances_info[0][connector_name]:10} | {balances_info[1][connector_name]:10}\n"
+        self._send_telegram(telegram_message)
         # 之后每60秒写一次
-        while not self._status_dump_stop.wait(60):
+        while True:
             _write_once()
+            await asyncio.sleep(60)
 
     async def on_stop(self):
         # 停止状态落盘线程
         try:
-            self._status_dump_stop.set()
-            th = self._status_dump_thread
-            if th is not None and th.is_alive():
-                th.join(timeout=2.0)
+            if self._status_dump_thread is not None and not self._status_dump_thread.done():
+                self._status_dump_thread.cancel()
+                try:
+                    await self._status_dump_thread
+                except asyncio.CancelledError:
+                    pass
                 self.logger().info("[status-dump] Status dump thread stopped")
         except Exception as e:
             self.logger().warning(f"[status-dump] Failed to stop thread: {e}")
