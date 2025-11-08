@@ -871,6 +871,17 @@ class FundingRateArbitrage(StrategyV2Base):
             filter_func=lambda x: x.id in executor_ids
         )
 
+    def check_is_liquidated(self, connector_1, connector_2, token):
+        pos_key_1 = f"{token}-{self.quote_markets_map.get(connector_1, 'USDT')}LONG"
+        pos_key_2 = f"{token}-{self.quote_markets_map.get(connector_2, 'USDT')}SHORT"
+        position_1 = self.connectors[connector_1].account_positions.get(pos_key_1, None)
+        position_2 = self.connectors[connector_2].account_positions.get(pos_key_2, None)
+        if position_1 is None or position_2 is None:
+            return True
+        if position_1.amount == Decimal(0) or position_2.amount == Decimal(0):
+            return True
+        return False
+
     def stop_actions_proposal(self) -> List[StopExecutorAction]:
         """
         Once the funding rate arbitrage is created we are going to control the funding payments pnl and the current
@@ -892,6 +903,16 @@ class FundingRateArbitrage(StrategyV2Base):
                 self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
                 stop_executor_actions.extend(self.create_stop_executor_action(executors))
                 continue
+            connector_1 = funding_arbitrage_info["connector_1"]
+            connector_2 = funding_arbitrage_info["connector_2"]
+            if self.check_is_liquidated(connector_1, connector_2, token):
+                self.logger().debug(f"Liquidation detected for {token}, stopping executors")
+                stopped_tokens.append(token)
+                funding_arbitrage_info['stop_reason'] = "LIQ"
+                funding_arbitrage_info['stop_time'] = self.current_timestamp
+                self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
+                stop_executor_actions.extend(self.create_stop_executor_action(executors))
+                continue
             if len(executors) != 2:
                 self.logger().debug(f"Executors not found for {token} ({len(executors)}) when stop actions proposal")
                 continue
@@ -903,8 +924,6 @@ class FundingRateArbitrage(StrategyV2Base):
             if not a_price_1 or not a_price_2:
                 self.logger().debug(f"Skip stop actions judgement {token} because open-order didn't filled")
                 continue
-            connector_1 = funding_arbitrage_info["connector_1"]
-            connector_2 = funding_arbitrage_info["connector_2"]
             c_price_1, _ = self.get_price_and_fee_with_cache( \
                 {}, connector_1, token, TradeType.SELL)
             c_price_2, _ = self.get_price_and_fee_with_cache( \
