@@ -62,6 +62,7 @@ class PerpetualTrading:
         self._account_positions[pos_key] = position
 
     def remove_position(self, post_key: str) -> Optional[Position]:
+        self.logger().debug(f"Removing position {post_key}")
         return self._account_positions.pop(post_key, None)
 
     def initialize_funding_info(self, funding_info: FundingInfo):
