@@ -609,7 +609,7 @@ class BinancePerpetualDerivative(PerpetualDerivativePyBase):
             amount = Decimal(position.get("positionAmt"))
             leverage = Decimal(position.get("leverage"))
             pos_key = self._perpetual_trading.position_key(hb_trading_pair, position_side)
-            if amount != 0:
+            if amount != Decimal("0"):
                 _position = Position(
                     trading_pair=await self.trading_pair_associated_to_exchange_symbol(trading_pair),
                     position_side=position_side,
