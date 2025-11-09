@@ -1444,8 +1444,8 @@ class FundingRateArbitrage(StrategyV2Base):
                         telegram_message += "```\n"
                         for connector_name in balances_info[0].keys():
                             telegram_message += f"{connector_name:10}\t : {balances_info[0][connector_name]:10} | {balances_info[1][connector_name]:10}\n"
+                        telegram_message += f"\n{self.format_utc(self.current_timestamp)}\n"
                         telegram_message += "```\n"
-                        telegram_message += f"{self.format_utc(self.current_timestamp)}"
                         self._send_telegram(telegram_message)
             except Exception as e:
                 self.logger().warning(f"[status-dump] Write failed: {e}")
@@ -1462,8 +1462,8 @@ class FundingRateArbitrage(StrategyV2Base):
             telegram_message += "```\n"
             for connector_name in balances_info[0].keys():
                 telegram_message += f"{connector_name:10}\t : {balances_info[0][connector_name]:10} | {balances_info[1][connector_name]:10}\n"
+            telegram_message += f"\n{self.format_utc(self.current_timestamp)}\n"
             telegram_message += "```\n"
-            telegram_message += f"{self.format_utc(self.current_timestamp)}"
             self._send_telegram(telegram_message)
         except Exception as e:
             self.logger().warning(f"[status-dump] Send failed: {e}")
