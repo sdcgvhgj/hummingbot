@@ -1094,22 +1094,55 @@ class FundingRateArbitrage(StrategyV2Base):
     # Telegram helpers (optional)
     # ------------------------
     def _send_telegram(self, text: str) -> None:
+        import urllib.request
+        import urllib.parse
+        import urllib.error
+        # Telegram 单条消息最大 4096 字符，必要时截断
+        def _maybe_truncate(msg: str) -> str:
+            return msg if len(msg) <= 4096 else (msg[:4060] + "\n...[truncated]...")
         try:
-            token = getattr(self.config, "telegram_bot_token", "") or os.getenv("TG_BOT_TOKEN", "")
-            chat_id = getattr(self.config, "telegram_chat_id", "") or os.getenv("TG_CHAT_ID", "")
+            token = (getattr(self.config, "telegram_bot_token", "") or os.getenv("TG_BOT_TOKEN", "")).strip()
+            chat_id = (getattr(self.config, "telegram_chat_id", "") or os.getenv("TG_CHAT_ID", "")).strip()
             if not token or not chat_id:
                 return
             url = f"https://api.telegram.org/bot{token}/sendMessage"
-            import urllib.request
-            import urllib.parse
-            data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
-            req = urllib.request.Request(url, data=data)
-            urllib.request.urlopen(req, timeout=5)
-        except Exception as e:
+            headers = {"Content-Type": "application/x-www-form-urlencoded"}
+            # 优先尝试 MarkdownV2，若解析失败再回退为纯文本
+            payload = {"chat_id": chat_id, "text": _maybe_truncate(text), "parse_mode": "MarkdownV2"}
+            data = urllib.parse.urlencode(payload).encode()
+            req = urllib.request.Request(url, data=data, headers=headers)
             try:
-                self.logger().debug(f"[tg] send failed: {e}")
-            except Exception:
-                pass
+                resp_bytes = urllib.request.urlopen(req, timeout=5).read()
+                self.logger().debug(f"[tg] sent successfully: {resp_bytes!r}")
+                return
+            except urllib.error.HTTPError as he:
+                # 读取错误响应体，便于诊断（例如 can't parse entities、chat not found 等）
+                body = b""
+                try:
+                    body = he.read()
+                except Exception:
+                    pass
+                try:
+                    body_text = body.decode("utf-8", "ignore")
+                except Exception:
+                    body_text = repr(body)
+                self.logger().debug(f"[tg] HTTPError {he.code}: {he.reason}. body={body_text}")
+                # 如果是 Markdown 解析错误，回退为纯文本再试一次
+                if "parse" in body_text.lower() or "can't parse" in body_text.lower():
+                    try:
+                        payload_fb = {"chat_id": chat_id, "text": _maybe_truncate(text)}
+                        data_fb = urllib.parse.urlencode(payload_fb).encode()
+                        req_fb = urllib.request.Request(url, data=data_fb, headers=headers)
+                        resp_bytes_fb = urllib.request.urlopen(req_fb, timeout=5).read()
+                        self.logger().debug(f"[tg] sent without parse_mode: {resp_bytes_fb!r}")
+                        return
+                    except Exception as e2:
+                        self.logger().debug(f"[tg] fallback send failed: {e2}")
+                        return
+                return
+        except Exception as e:
+            self.logger().debug(f"[tg] send failed: {e}")
+            return
 
     def get_balances_info(self):
         balances_info = [{ "\\": "Avail", "All": 0 }, { "\\": "Total", "All": 0 }]
@@ -1373,13 +1406,14 @@ class FundingRateArbitrage(StrategyV2Base):
 
                 # send telegram notification
                 if self.status_stopped_arbitrage_info:
-                    telegram_message = f"{self.format_utc(self.current_timestamp)}: \n"
+                    telegram_message = ""
                     new_stopped_arbitrages_found = False
                     for item in self.status_stopped_arbitrage_info:
                         key = item['Stop Time'] + item['Token']
                         if key not in sent_stopped_arbitrages and item['Ex Closed']:
                             sent_stopped_arbitrages.add(key)
                             telegram_message += "**New Stopped Funding Arbitrages**\n"
+                            telegram_message += "```\n"
                             telegram_message += f"Token      : {item['Token']}\n"
                             telegram_message += f"Conn 1     : {item['Conn 1']}\n"
                             telegram_message += f"Conn 2     : {item['Conn 2']}\n"
@@ -1396,18 +1430,22 @@ class FundingRateArbitrage(StrategyV2Base):
                             telegram_message += f"SR         : {item['SR']}\n"
                             telegram_message += f"Hold Time  : {item['Hold Time']}\n"
                             telegram_message += f"Stop Time  : {item['Stop Time']}\n"
+                            telegram_message += "```\n"
                             new_stopped_arbitrages_found = True
                             break
                     if new_stopped_arbitrages_found:
                         if self.status_active_arbitrage_info:
-                            telegram_message += f"**Current Active Arbitrages**\n"
+                            telegram_message += f"\n**Current Active Arbitrages**\n"
                             for active_arbitrage_info in self.status_active_arbitrage_info:
                                 telegram_message += f"Hold Time : {active_arbitrage_info['Hold Time']} | "
                                 telegram_message += f"Token : {active_arbitrage_info['Token']}\n"
                         balances_info = self.get_balances_info()
-                        telegram_message += "**Current USDT Balances**\n"
+                        telegram_message += "\n**Current USDT Balances**\n"
+                        telegram_message += "```\n"
                         for connector_name in balances_info[0].keys():
                             telegram_message += f"{connector_name:10}\t : {balances_info[0][connector_name]:10} | {balances_info[1][connector_name]:10}\n"
+                        telegram_message += "```\n"
+                        telegram_message += f"{self.format_utc(self.current_timestamp)}"
                         self._send_telegram(telegram_message)
             except Exception as e:
                 self.logger().warning(f"[status-dump] Write failed: {e}")
@@ -1418,12 +1456,18 @@ class FundingRateArbitrage(StrategyV2Base):
             await asyncio.sleep(1)
             continue
         _write_once()
-        balances_info = self.get_balances_info()
-        telegram_message = f"{self.format_utc(self.current_timestamp)}: \n"
-        telegram_message += "**Starting USDT Balances**\n"
-        for connector_name in balances_info[0].keys():
-            telegram_message += f"{connector_name:10}\t : {balances_info[0][connector_name]:10} | {balances_info[1][connector_name]:10}\n"
-        self._send_telegram(telegram_message)
+        try:
+            balances_info = self.get_balances_info()
+            telegram_message = "**Starting USDT Balances**\n"
+            telegram_message += "```\n"
+            for connector_name in balances_info[0].keys():
+                telegram_message += f"{connector_name:10}\t : {balances_info[0][connector_name]:10} | {balances_info[1][connector_name]:10}\n"
+            telegram_message += "```\n"
+            telegram_message += f"{self.format_utc(self.current_timestamp)}"
+            self._send_telegram(telegram_message)
+        except Exception as e:
+            self.logger().warning(f"[status-dump] Send failed: {e}")
+            pass
         # 之后每60秒写一次
         while True:
             _write_once()
