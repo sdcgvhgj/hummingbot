@@ -1,4 +1,5 @@
 import asyncio
+import json
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
@@ -474,7 +475,7 @@ class BybitPerpetualDerivative(PerpetualDerivativePyBase):
             amount = Decimal(str(data["size"]))
             hb_trading_pair = await self.trading_pair_associated_to_exchange_symbol(ex_trading_pair)
             position_side = PositionSide.LONG if data["side"] == "Buy" else PositionSide.SHORT
-            pos_key = self._perpetual_trading.position_key(hb_trading_pair, position_side)
+            pos_key = self._perpetual_trading.position_key(hb_trading_pair, position_side) + str(data.get("positionIdx"))
             if amount != s_decimal_0:
                 unrealized_pnl = Decimal(str(data["unrealisedPnl"]))
                 entry_price = Decimal(str(data["avgPrice"]))
@@ -487,9 +488,14 @@ class BybitPerpetualDerivative(PerpetualDerivativePyBase):
                     amount=amount * (Decimal("-1.0") if position_side == PositionSide.SHORT else Decimal("1.0")),
                     leverage=leverage,
                 )
+                self.logger().debug(f"[position debug] BybitPerpetual _update_positions: Setting position {hb_trading_pair} {position_side} because amount is {amount}")
+                self.logger().debug(f"[position debug] BybitPerpetual _update_positions: {json.dumps(data, indent=4)}")
                 self._perpetual_trading.set_position(pos_key, position)
             else:
-                self._perpetual_trading.remove_position(pos_key)
+                if self._perpetual_trading.get_position(hb_trading_pair, position_side) is not None:
+                    self.logger().debug(f"[position debug] BybitPerpetual _update_positions: Removing position {hb_trading_pair} {position_side} because amount is 0")
+                    self.logger().debug(f"[position debug] BybitPerpetual _update_positions: {json.dumps(data, indent=4)}")
+                    self._perpetual_trading.remove_position(pos_key)
 
     async def _all_trade_updates_for_order(self, order: InFlightOrder) -> List[TradeUpdate]:
         trade_updates = []
@@ -610,7 +616,7 @@ class BybitPerpetualDerivative(PerpetualDerivativePyBase):
         amount = Decimal(str(position_msg["size"]))
         leverage = Decimal(str(position_msg["leverage"]))
         unrealized_pnl = position_value - (amount * entry_price * leverage)
-        pos_key = self._perpetual_trading.position_key(trading_pair, position_side)
+        pos_key = self._perpetual_trading.position_key(trading_pair, position_side) + str(position_msg.get("positionIdx"))
         if amount != s_decimal_0:
             position = Position(
                 trading_pair=trading_pair,
@@ -620,9 +626,14 @@ class BybitPerpetualDerivative(PerpetualDerivativePyBase):
                 amount=amount * (Decimal("-1.0") if position_side == PositionSide.SHORT else Decimal("1.0")),
                 leverage=leverage,
             )
+            self.logger().debug(f"[position debug] BybitPerpetual user stream: Setting position {trading_pair} {position_side} because amount is {amount}")
+            self.logger().debug(f"[position debug] BybitPerpetual user stream: {json.dumps(position_msg, indent=4)}")
             self._perpetual_trading.set_position(pos_key, position)
         else:
-            self._perpetual_trading.remove_position(pos_key)
+            if self._perpetual_trading.get_position(trading_pair, position_side) is not None:
+                self.logger().debug(f"[position debug] BybitPerpetual user stream: Removing position {trading_pair} {position_side} because amount is 0")
+                self.logger().debug(f"[position debug] BybitPerpetual user stream: {json.dumps(position_msg, indent=4)}")
+                self._perpetual_trading.remove_position(pos_key)
 
         # Trigger balance update because Bybit doesn't have balance updates through the websocket
         safe_ensure_future(self._update_balances())

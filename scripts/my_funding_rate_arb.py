@@ -897,15 +897,23 @@ class FundingRateArbitrage(StrategyV2Base):
         )
 
     def check_is_liquidated(self, connector_1, connector_2, token):
-        pos_key_1 = f"{token}-{self.quote_markets_map.get(connector_1, 'USDT')}LONG"
-        pos_key_2 = f"{token}-{self.quote_markets_map.get(connector_2, 'USDT')}SHORT"
-        position_1 = self.connectors[connector_1].account_positions.get(pos_key_1, None)
-        position_2 = self.connectors[connector_2].account_positions.get(pos_key_2, None)
+        def get_position(connector, token, side):
+            pos_key = f"{token}-{self.quote_markets_map.get(connector, 'USDT')}{side}"
+            if connector == 'bybit_perpetual':
+                for pos_key_ in [pos_key + str(i) for i in range(3)]:
+                    position = self.connectors[connector].account_positions.get(pos_key_, None)
+                    if position is not None:
+                        return position
+                return None
+            else:
+                return self.connectors[connector].account_positions.get(pos_key, None)
+        position_1 = get_position(connector_1, token, "LONG")
+        position_2 = get_position(connector_2, token, "SHORT")
         if position_1 is None or position_2 is None:
-            self.logger().debug(f"Position not found for {token} {connector_1} {connector_2}, pos_key_1: {pos_key_1}, pos_key_2: {pos_key_2}")
+            self.logger().debug(f"Position not found for {token} {connector_1} {connector_2}")
             return True
         if position_1.amount == Decimal(0) or position_2.amount == Decimal(0):
-            self.logger().debug(f"Position amount is 0 for {token} {connector_1} {connector_2}, pos_key_1: {pos_key_1}, pos_key_2: {pos_key_2}")
+            self.logger().debug(f"Position amount is 0 for {token} {connector_1} {connector_2}, position_1: {repr(position_1)}, position_2: {repr(position_2)}")
             return True
         return False
 
@@ -1079,7 +1087,7 @@ class FundingRateArbitrage(StrategyV2Base):
         return f"{x:>7.3f}"
     
     def format_time(self, x) -> str:
-        sign = ' ' if x > 0 else '-'
+        sign = '' if x > 0 else '-'
         x = abs(x)
         hours, remainder = divmod(x, 3600)
         minutes, seconds = divmod(remainder, 60)
@@ -1145,7 +1153,7 @@ class FundingRateArbitrage(StrategyV2Base):
             return
 
     def get_balances_info(self):
-        balances_info = [{ "\\": "Avail", "All": 0 }, { "\\": "Total", "All": 0 }]
+        balances_info = [{ "USDT": "Avail", "All": 0 }, { "USDT": "Total", "All": 0 }]
         for connector_name in self.connectors.keys():
             avail_usd = self.connectors[connector_name].available_balances.get(self.quote_markets_map.get(connector_name, 'USDT'), 0)
             total_usd = self.connectors[connector_name].get_balance(self.quote_markets_map.get(connector_name, 'USDT'))
@@ -1157,7 +1165,7 @@ class FundingRateArbitrage(StrategyV2Base):
             balances_info[1]["All"] += total_usd
         for item in balances_info:
             for key in item.keys():
-                if key != "\\":
+                if key != "USDT":
                     item[key] = self.format_currency(item[key])
         return balances_info
 
@@ -1414,38 +1422,39 @@ class FundingRateArbitrage(StrategyV2Base):
                             sent_stopped_arbitrages.add(key)
                             telegram_message += "**New Stopped Funding Arbitrages**\n"
                             telegram_message += "```\n"
-                            telegram_message += f"Token      : {item['Token']}\n"
-                            telegram_message += f"Conn 1     : {item['Conn 1']}\n"
-                            telegram_message += f"Conn 2     : {item['Conn 2']}\n"
-                            telegram_message += f"Px Diff    : {item['Px Diff']}\n"
-                            telegram_message += f"Ix Diff    : {item['Ix Diff']}\n"
-                            telegram_message += f"Fd Diff    : {item['Fd Diff']}\n"
-                            telegram_message += f"Open Delay : {item['Open Delay']}\n"
-                            telegram_message += f"Open Sllip : {item['Open Sllipage']}\n"
-                            telegram_message += f"Close Delay: {item['Close Delay']}\n"
-                            telegram_message += f"Close Sllip: {item['Close Sllipage']}\n"
-                            telegram_message += f"Close Type : {item['Close Type']}\n"
-                            telegram_message += f"Fd Pnl     : {item['Fd Pnl']}\n"
-                            telegram_message += f"Td Pnl     : {item['Td Pnl']}\n"
-                            telegram_message += f"SR         : {item['SR']}\n"
-                            telegram_message += f"Hold Time  : {item['Hold Time']}\n"
-                            telegram_message += f"Stop Time  : {item['Stop Time']}\n"
+                            telegram_message += f"Token           : {item['Token']}\n"
+                            telegram_message += f"Conn 1          : {item['Conn 1']}\n"
+                            telegram_message += f"Conn 2          : {item['Conn 2']}\n"
+                            telegram_message += f"Px Diff         : {item['Px Diff']}\n"
+                            telegram_message += f"Ix Diff         : {item['Ix Diff']}\n"
+                            telegram_message += f"Fd Diff         : {item['Fd Diff']}\n"
+                            telegram_message += f"Open Delay      : {item['Open Delay']}\n"
+                            telegram_message += f"Open Sllipage   : {item['Open Sllipage']}\n"
+                            telegram_message += f"Close Delay     : {item['Close Delay']}\n"
+                            telegram_message += f"Close Sllipage  : {item['Close Sllipage']}\n"
+                            telegram_message += f"Close Type      : {item['Close Type']}\n"
+                            telegram_message += f"Fd Pnl          : {item['Fd Pnl']}\n"
+                            telegram_message += f"Td Pnl          : {item['Td Pnl']}\n"
+                            telegram_message += f"SR              : {item['SR']}\n"
+                            telegram_message += f"Hold Time       : {item['Hold Time']}\n"
+                            telegram_message += f"Stop Time       : {item['Stop Time']}\n"
                             telegram_message += "```\n"
                             new_stopped_arbitrages_found = True
                             break
                     if new_stopped_arbitrages_found:
                         if self.status_active_arbitrage_info:
                             telegram_message += f"\n**Current Active Arbitrages**\n"
+                            telegram_message += "```\n"
                             for active_arbitrage_info in self.status_active_arbitrage_info:
                                 telegram_message += f"Hold Time : {active_arbitrage_info['Hold Time']} | "
                                 telegram_message += f"Token : {active_arbitrage_info['Token']}\n"
+                            telegram_message += "```\n"
                         balances_info = self.get_balances_info()
                         telegram_message += "\n**Current USDT Balances**\n"
                         telegram_message += "```\n"
-                        for connector_name in balances_info[0].keys():
-                            telegram_message += f"{connector_name:10}\t : {balances_info[0][connector_name]:10} | {balances_info[1][connector_name]:10}\n"
-                        telegram_message += f"\n{self.format_utc(self.current_timestamp)}\n"
+                        telegram_message += format_df_for_printout(df=pd.DataFrame(balances_info), table_format="psql",)
                         telegram_message += "```\n"
+                        telegram_message += f"\n```\n{self.format_utc(self.current_timestamp)}\n```\n"
                         self._send_telegram(telegram_message)
             except Exception as e:
                 self.logger().warning(f"[status-dump] Write failed: {e}")
@@ -1460,10 +1469,9 @@ class FundingRateArbitrage(StrategyV2Base):
             balances_info = self.get_balances_info()
             telegram_message = "**Starting USDT Balances**\n"
             telegram_message += "```\n"
-            for connector_name in balances_info[0].keys():
-                telegram_message += f"{connector_name:10}\t : {balances_info[0][connector_name]:10} | {balances_info[1][connector_name]:10}\n"
-            telegram_message += f"\n{self.format_utc(self.current_timestamp)}\n"
+            telegram_message += format_df_for_printout(df=pd.DataFrame(balances_info), table_format="psql",)
             telegram_message += "```\n"
+            telegram_message += f"\n```\n{self.format_utc(self.current_timestamp)}\n```\n"
             self._send_telegram(telegram_message)
         except Exception as e:
             self.logger().warning(f"[status-dump] Send failed: {e}")

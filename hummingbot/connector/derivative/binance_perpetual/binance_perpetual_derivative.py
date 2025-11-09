@@ -454,9 +454,11 @@ class BinancePerpetualDerivative(PerpetualDerivativePyBase):
                 if position is not None:
                     amount = Decimal(asset["pa"])
                     if amount == Decimal("0"):
+                        self.logger().debug(f"[position debug] BinancePerpetual user stream: Removing position {hb_trading_pair} {side} because amount is 0")
                         pos_key = self._perpetual_trading.position_key(hb_trading_pair, side)
                         self._perpetual_trading.remove_position(pos_key)
                     else:
+                        self.logger().debug(f"[position debug] BinancePerpetual user stream: Updating position {hb_trading_pair} {side} because amount is {amount}")
                         position.update_position(position_side=PositionSide[asset["ps"]],
                                                  unrealized_pnl=Decimal(asset["up"]),
                                                  entry_price=Decimal(asset["ep"]),
@@ -618,9 +620,12 @@ class BinancePerpetualDerivative(PerpetualDerivativePyBase):
                     amount=amount,
                     leverage=leverage
                 )
+                self.logger().debug(f"[position debug] BinancePerpetual _update_positions: Setting position {hb_trading_pair} {position_side} because amount is {amount}")
                 self._perpetual_trading.set_position(pos_key, _position)
             else:
-                self._perpetual_trading.remove_position(pos_key)
+                if self._perpetual_trading.get_position(hb_trading_pair, position_side) is not None:
+                    self.logger().debug(f"[position debug] BinancePerpetual _update_positions: Removing position {hb_trading_pair} {position_side} because amount is 0")
+                    self._perpetual_trading.remove_position(pos_key)
 
     async def _update_order_fills_from_trades(self):
         last_tick = int(self._last_poll_timestamp / self.UPDATE_ORDER_STATUS_MIN_INTERVAL)
