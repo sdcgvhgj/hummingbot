@@ -1565,6 +1565,12 @@ class FundingRateArbitrage(StrategyV2Base):
                             if abs(t1 - t2) > 60:
                                 continue
 
+                            time_to_funding_1 = t1 - time.time()
+                            time_to_funding_2 = t2 - time.time()
+                            if time_to_funding_1 / 60 - 60 > self.config.max_time_to_next_funding \
+                                or time_to_funding_2 / 60 - 60> self.config.max_time_to_next_funding:
+                                continue
+
                             # Fees (taker, market, open)
                             amt_1 = self.config.position_size_quote / price_1 if price_1 > 0 else Decimal("0")
                             amt_2 = self.config.position_size_quote / price_2 if price_2 > 0 else Decimal("0")
