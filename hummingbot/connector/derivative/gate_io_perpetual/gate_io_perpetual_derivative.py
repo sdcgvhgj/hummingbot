@@ -704,7 +704,11 @@ class GateIoPerpetualDerivative(PerpetualDerivativePyBase):
 
         for position in positions:
             ex_trading_pair = position.get("contract")
-            hb_trading_pair = await self.trading_pair_associated_to_exchange_symbol(ex_trading_pair)
+            try:
+                hb_trading_pair = await self.trading_pair_associated_to_exchange_symbol(ex_trading_pair)
+            except KeyError:
+                # Ignore results for which their symbols is not tracked by the connector
+                continue
 
             amount = Decimal(position.get("size"))
             ex_mode = position.get("mode")
