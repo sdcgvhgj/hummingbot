@@ -279,12 +279,15 @@ class GateIoPerpetualDerivative(PerpetualDerivativePyBase):
                 min_price_inc = Decimal(f"{rule['order_price_round']}")
                 min_amount = min_amount_inc
                 min_notional = Decimal(str(1))
+                in_delisting = rule["in_delisting"]
                 result[trading_pair] = TradingRule(trading_pair,
                                                    min_order_size=min_amount,
                                                    min_price_increment=min_price_inc,
                                                    min_base_amount_increment=min_amount_inc,
                                                    min_notional_size=min_notional,
                                                    min_order_value=min_notional,
+                                                   perpetual_delisting_time_seconds=1 if in_delisting else None,
+                                                   perpetual_funding_interval_seconds=float(rule["funding_interval"])
                                                    )
             except Exception:
                 self.logger().error(f"Error parsing the trading pair rule {rule}. Skipping.", exc_info=True)

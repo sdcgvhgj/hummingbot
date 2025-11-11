@@ -57,7 +57,7 @@ class GateIoPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
     async def _order_book_snapshot(self, trading_pair: str) -> OrderBookMessage:
         self.logger().debug("GateIoPerp requesting order_book_snapshot for " + trading_pair)
         snapshot_response: Dict[str, Any] = await self._request_order_book_snapshot(trading_pair)
-        snapshot_timestamp: float = self._time()
+        snapshot_timestamp: float = float(snapshot_response["update"])
         snapshot_msg: OrderBookMessage = OrderBookMessage(
             OrderBookMessageType.SNAPSHOT,
             {
@@ -81,6 +81,7 @@ class GateIoPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         """
         params = {
             "contract": await self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair),
+            "limit": "20",
             "with_id": json.dumps(True)
         }
 
@@ -159,7 +160,7 @@ class GateIoPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
                     "time": int(self._time()),
                     "channel": CONSTANTS.ORDERS_UPDATE_ENDPOINT_NAME,
                     "event": "subscribe",
-                    "payload": [symbol, "100ms"]
+                    "payload": [symbol, "20ms", "20"] # frequency, depth
                 }
                 subscribe_orderbook_request: WSJSONRequest = WSJSONRequest(payload=order_book_payload)
 
