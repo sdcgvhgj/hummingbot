@@ -62,7 +62,7 @@ class GateIoPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             OrderBookMessageType.SNAPSHOT,
             {
                 "trading_pair": trading_pair,
-                "update_id": snapshot_response["id"],
+                "update_id": 0,
                 "bids": [[i['p'], self._connector._format_size_to_amount(trading_pair, Decimal(str(i['s'])))] for i in
                          snapshot_response["bids"]],
                 "asks": [[i['p'], self._connector._format_size_to_amount(trading_pair, Decimal(str(i['s'])))] for i in
@@ -224,3 +224,9 @@ class GateIoPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             throttler_limit_id=CONSTANTS.MARK_PRICE_URL,
         )
         return data
+
+    async def listen_for_order_book_snapshots(self, ev_loop: asyncio.AbstractEventLoop, output: asyncio.Queue):
+        # do not request REST order book snapshots due to update_id inconsistency with WS snapshots
+        # TODO: throw away messages
+        self.logger().debug("GateIoPerpetual API OrderBookDataSource: do not request REST order book snapshots")
+        pass
