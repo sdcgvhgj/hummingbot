@@ -738,7 +738,8 @@ class GateIoPerpetualDerivative(PerpetualDerivativePyBase):
                 self._perpetual_trading.set_position(pos_key, position)
 
             else:
-                self._perpetual_trading.remove_position(pos_key)
+                if self._perpetual_trading.account_positions.get(pos_key) is not None:
+                    self._perpetual_trading.remove_position(pos_key)
 
     async def _get_position_mode(self) -> Optional[PositionMode]:
         if self._position_mode is None:

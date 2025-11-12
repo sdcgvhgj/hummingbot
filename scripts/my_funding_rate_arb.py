@@ -905,8 +905,9 @@ class FundingRateArbitrage(StrategyV2Base):
                     if position is not None:
                         return position
                 return None
-            else:
-                return self.connectors[connector].account_positions.get(pos_key, None)
+            if connector == 'gate_io_perpetual':
+                pos_key = f"{token}-{self.quote_markets_map.get(connector, 'USDT')}"
+            return self.connectors[connector].account_positions.get(pos_key, None)
         position_1 = get_position(connector_1, token, "LONG")
         position_2 = get_position(connector_2, token, "SHORT")
         if position_1 is None or position_2 is None:
