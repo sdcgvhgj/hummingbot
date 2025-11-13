@@ -717,7 +717,7 @@ class FundingRateArbitrage(StrategyV2Base):
 
     def good_time_to_trade(self):
         cur_min = self.current_timestamp / 60 % 60
-        return cur_min >= 11 and cur_min <= 49
+        return cur_min >= 5 and cur_min <= 55
 
     # ------------------------
     # Consecutive-confirm helpers
