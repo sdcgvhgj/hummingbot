@@ -220,7 +220,7 @@ class OkxPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
 
             order_book_args = [
                 {
-                    "channel": CONSTANTS.WS_ORDER_BOOK_400_DEPTH_100_MS_EVENTS_CHANNEL,
+                    "channel": CONSTANTS.WS_ORDER_BOOK_50_DEPTH_10_MS_EVENTS_CHANNEL,
                     "instId": ex_trading_pair
                 } for ex_trading_pair in ex_trading_pairs
             ]

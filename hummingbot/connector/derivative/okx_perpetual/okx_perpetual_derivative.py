@@ -630,7 +630,8 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
                 )
                 self._perpetual_trading.set_position(pos_key, position)
             else:
-                self._perpetual_trading.remove_position(pos_key)
+                if self._perpetual_trading.account_positions.get(pos_key) is not None:
+                    self._perpetual_trading.remove_position(pos_key)
 
     @staticmethod
     def get_position_side(position_msg: Dict[str, Any]) -> PositionSide:
@@ -675,7 +676,8 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
                 )
                 self._perpetual_trading.set_position(pos_key, position)
             else:
-                self._perpetual_trading.remove_position(pos_key)
+                if self._perpetual_trading.account_positions.get(pos_key) is not None:
+                    self._perpetual_trading.remove_position(pos_key)
             # safe_ensure_future(self._update_balances())
 
     def _process_trade_event_message(self, trade_msg: Dict[str, Any]):
