@@ -217,6 +217,7 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
             amount=amount,
             price=price,
         )
+        self.logger().debug(f"[debug okx] _get_fee: {fee=}")
         return fee
 
     async def _initialize_trading_pair_symbol_map(self):
@@ -311,6 +312,7 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
         )
 
         price = float(resp_json["data"][0]["last"])
+        self.logger().debug(f"[debug okx] _get_last_traded_price: {price=}")
         return price
 
     async def get_last_traded_prices(self, trading_pairs: List[str] = None) -> Dict[str, float]:

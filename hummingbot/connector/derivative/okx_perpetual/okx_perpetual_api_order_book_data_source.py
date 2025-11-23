@@ -127,6 +127,7 @@ class OkxPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             next_funding_utc_timestamp=int(float(funding_data["nextFundingTime"]) * 1e-3),
             rate=Decimal(str(funding_data["fundingRate"])),
         )
+        self.logger().debug(f"[debug okx] get_funding_info: {funding_info=}")
         return funding_info
 
     async def _request_complete_funding_info(self, trading_pair: str):
