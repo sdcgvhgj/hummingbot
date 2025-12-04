@@ -1564,12 +1564,14 @@ class FundingRateArbitrage(StrategyV2Base):
                             t1 = f1.next_funding_utc_timestamp
                             t2 = f2.next_funding_utc_timestamp
                             if abs(t1 - t2) > 60:
+                                self.logger().debug(f"[dynamic-topk] Skip {base} ({c1}->{c2}) due to time difference: {self.format_utc(t1)} - {self.format_utc(t2)}")
                                 continue
 
                             time_to_funding_1 = t1 - time.time()
                             time_to_funding_2 = t2 - time.time()
                             if time_to_funding_1 / 60 - 60 > self.config.max_time_to_next_funding \
                                 or time_to_funding_2 / 60 - 60> self.config.max_time_to_next_funding:
+                                self.logger().debug(f"[dynamic-topk] Skip {base} ({c1}->{c2}) due to time to funding: {self.format_utc(time_to_funding_1)} - {self.format_utc(time_to_funding_2)}")
                                 continue
 
                             # Fees (taker, market, open)
