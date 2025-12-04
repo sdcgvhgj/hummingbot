@@ -71,6 +71,10 @@ class AsyncThrottler(AsyncThrottlerBase):
         :return: An async context (used with async with syntax)
         """
         rate_limit, related_rate_limits = self.get_related_limits(limit_id=limit_id)
+        if rate_limit is None:
+            self.logger().error(f"Rate limit not found for limit_id: {limit_id}")
+            raise ValueError(f"Rate limit not found for limit_id: {limit_id}")
+
         return AsyncRequestContext(
             task_logs=self._task_logs,
             rate_limit=rate_limit,

@@ -110,6 +110,7 @@ def get_rest_api_limit_id_for_endpoint(method: str, endpoint: str) -> str:
 
 
 def get_pair_specific_limit_id(method: str, endpoint: str, trading_pair: str) -> str:
+    trading_pair = "" # no trading_pair provided when building rate limits, use empty string for rate limits
     base_limit_id = get_rest_api_limit_id_for_endpoint(method, endpoint)
     return f"{base_limit_id}-{trading_pair}"
 
@@ -197,6 +198,9 @@ def _build_private_rate_limits(trading_pairs: List[str]) -> List[RateLimit]:
 
 def _build_private_pair_specific_rate_limits(trading_pairs: List[str]) -> List[RateLimit]:
     rate_limits = []
+    if not trading_pairs:
+        trading_pairs = [""] # no trading_pairs provided, use empty string for rate limits
+
     for trading_pair in trading_pairs:
         trading_pair_rate_limits = [
             RateLimit(
