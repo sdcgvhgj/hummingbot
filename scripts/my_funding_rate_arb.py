@@ -910,8 +910,11 @@ class FundingRateArbitrage(StrategyV2Base):
             return self.connectors[connector].account_positions.get(pos_key, None)
         position_1 = get_position(connector_1, token, "LONG")
         position_2 = get_position(connector_2, token, "SHORT")
-        if position_1 is None or position_2 is None:
-            self.logger().debug(f"Position not found for {token} {connector_1} {connector_2}")
+        if position_1 is None:
+            self.logger().debug(f"Position not found for {token} {connector_1}")
+            return True
+        if position_2 is None:
+            self.logger().debug(f"Position not found for {token} {connector_2}")
             return True
         if position_1.amount == Decimal(0) or position_2.amount == Decimal(0):
             self.logger().debug(f"Position amount is 0 for {token} {connector_1} {connector_2}, position_1: {repr(position_1)}, position_2: {repr(position_2)}")
