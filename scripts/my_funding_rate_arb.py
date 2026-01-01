@@ -305,6 +305,12 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
         default=20, gt=0,
         json_schema_extra={"prompt": lambda mi: "Enter the leverage (e.g. 20): ", "prompt_on_new": True},
     )
+    liquidation_buffer_pct: Decimal = Field(
+        default=0.05,
+        json_schema_extra={
+            "prompt": lambda mi: "Stop if price is within X pct of estimated liquidation (e.g. 0.05): ",
+            "prompt_on_new": True}
+    )
     min_trade_profitability: Decimal = Field(
         default=0.001,
         json_schema_extra={
@@ -870,7 +876,11 @@ class FundingRateArbitrage(StrategyV2Base):
                     "executors_ids": [position_executor_config_1.id, position_executor_config_2.id],
                     "side": trade_side,
                     "funding_payments": [],
-                    "start_time": self.current_timestamp
+                    "start_time": self.current_timestamp,
+                    "position_prices": {
+                        connector_1: price_1,
+                        connector_2: price_2,
+                    },
                 }
                 self.create_action_cool_down = CREATE_ACTION_COOL_DOWN_COUNT
                 return [CreateExecutorAction(executor_config=position_executor_config_1),
@@ -921,6 +931,38 @@ class FundingRateArbitrage(StrategyV2Base):
             return True
         return False
 
+    def _update_position_prices(self, token: str, connector_prices: Dict[str, Decimal]) -> None:
+        try:
+            if token not in self.active_funding_arbitrages:
+                return
+            self.active_funding_arbitrages[token].setdefault("position_prices", {})
+            self.active_funding_arbitrages[token]["position_prices"].update(connector_prices)
+        except Exception as e:
+            self.logger().debug(f"Failed to update position prices for {token}: {e}")
+
+    def _liquidation_distance_pct(self, executor: ExecutorInfo, current_price: Decimal):
+        try:
+            entry_price_raw = executor.custom_info.get("actual_open_price") or executor.custom_info.get("entry_price")
+            side = executor.custom_info.get("side")
+            if entry_price_raw in (None, 0) or side not in (TradeType.BUY, TradeType.SELL):
+                return None
+            entry_price = Decimal(str(entry_price_raw))
+            leverage_raw = executor.custom_info.get("leverage") or self.config.leverage
+            leverage = Decimal(str(leverage_raw))
+            if leverage <= 0:
+                return None
+
+            if side == TradeType.BUY:
+                liquidation_price = entry_price * (Decimal(1) - Decimal(1) / leverage)
+                if liquidation_price <= 0:
+                    return None
+                return (current_price - liquidation_price) / liquidation_price
+            liquidation_price = entry_price * (Decimal(1) + Decimal(1) / leverage)
+            return (liquidation_price - current_price) / liquidation_price
+        except Exception as e:
+            self.logger().debug(f"Failed to compute liquidation distance for executor {executor.id}: {e}")
+            return None
+
     def stop_actions_proposal(self) -> List[StopExecutorAction]:
         """
         Once the funding rate arbitrage is created we are going to control the funding payments pnl and the current
@@ -953,6 +995,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
                 stop_executor_actions.extend(self.create_stop_executor_action(executors))
                 continue
+            # pre-liquidation check
             if len(executors) != 2:
                 self.logger().debug(f"Executors not found for {token} ({len(executors)}) when stop actions proposal")
                 continue
@@ -968,6 +1011,34 @@ class FundingRateArbitrage(StrategyV2Base):
                 {}, connector_1, token, TradeType.SELL)
             c_price_2, _ = self.get_price_and_fee_with_cache( \
                 {}, connector_2, token, TradeType.BUY)
+            self._update_position_prices(token, {
+                connector_1: c_price_1,
+                connector_2: c_price_2,
+            })
+            executor_1, executor_2 = executors
+
+            try:
+                liquidation_buffer_pct = Decimal(str(getattr(self.config, "liquidation_buffer_pct", Decimal("0.05"))))
+            except Exception:
+                liquidation_buffer_pct = Decimal("0")
+            if liquidation_buffer_pct < 0:
+                liquidation_buffer_pct = Decimal("0")
+
+            liq_distance_1 = self._liquidation_distance_pct(executor_1, c_price_1)
+            liq_distance_2 = self._liquidation_distance_pct(executor_2, c_price_2)
+            if (liq_distance_1 is not None and liq_distance_1 <= liquidation_buffer_pct) or \
+               (liq_distance_2 is not None and liq_distance_2 <= liquidation_buffer_pct):
+                self.logger().warning(
+                    f"Liquidation proximity detected for {token}: "
+                    f"{connector_1} dist={liq_distance_1 if liq_distance_1 is not None else 'N/A'}, "
+                    f"{connector_2} dist={liq_distance_2 if liq_distance_2 is not None else 'N/A'}")
+                stopped_tokens.append(token)
+                funding_arbitrage_info['stop_reason'] = "LIQ_NEAR"
+                funding_arbitrage_info['stop_time'] = self.current_timestamp
+                self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
+                stop_executor_actions.extend(self.create_stop_executor_action(executors, c_price_1, c_price_2))
+                continue
+
             executors_pnl = sum(executor.net_pnl_pct for executor in executors)
             price_1 = funding_arbitrage_info['price_1']
             executors_pnl_by_hand = (a_price_2 - a_price_1 - c_price_2 + c_price_1) / price_1 - fee_1 - fee_2
@@ -976,7 +1047,6 @@ class FundingRateArbitrage(StrategyV2Base):
             trade_pnl_by_had = (a_price_2 - a_price_1 - c_price_2 + c_price_1) / price_1
             # self.logger().debug(f"{executors_trade_pnl=:.4%}, by_hand={trade_pnl_by_had:.4%}")
             # self.logger().debug(f"{a_price_1=:.7f},{a_price_2=:.7f},{c_price_1=:.7f},{c_price_2=:.7f}")
-            executor_1, executor_2 = executors
             # self.logger().debug(f"{executor_1.custom_info['entry_price']=:.7f},{executor_2.custom_info['entry_price']=:.7f}")
             # self.logger().debug(f"{executor_1.custom_info['close_price']=:.7f},{executor_2.custom_info['close_price']=:.7f}")
             funding_info_report = self.get_funding_info_by_token(token)
