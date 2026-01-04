@@ -40,6 +40,8 @@ class OkxPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         self._last_next_funding_utc_timestamp = None
         self._last_rate = None
         self._trading_rules = {}
+        # Track last processed seqId per exchange trading pair to detect dropped diffs
+        self._last_seq_ids: Dict[str, Optional[int]] = {}
 
     # 1 - Order Book Snapshot REST
     async def _order_book_snapshot(self, trading_pair: str) -> OrderBookMessage:
@@ -221,7 +223,8 @@ class OkxPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
 
             order_book_args = [
                 {
-                    "channel": CONSTANTS.WS_ORDER_BOOK_50_DEPTH_10_MS_EVENTS_CHANNEL,
+                    # Use public 400-depth/100ms channel to keep routing consistent and avoid VIP-only stream
+                    "channel": CONSTANTS.WS_ORDER_BOOK_400_DEPTH_100_MS_EVENTS_CHANNEL,
                     "instId": ex_trading_pair
                 } for ex_trading_pair in ex_trading_pairs
             ]
@@ -323,11 +326,31 @@ class OkxPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         await self._set_trading_rules()
 
         for diff_data in diff_updates:
-            timestamp: float = int(diff_data["ts"])
-            update_id: int = int(timestamp)
             ex_trading_pair = raw_message["arg"]["instId"]
             trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(
                 symbol=ex_trading_pair)
+            seq_id = int(diff_data.get("seqId", 0))
+            prev_seq_id = int(diff_data.get("prevSeqId", 0))
+            last_seq = self._last_seq_ids.get(ex_trading_pair)
+
+            # If we have a previous seqId and it does not match prevSeqId, we likely missed updates.
+            if last_seq is not None and prev_seq_id != last_seq:
+                self.logger().warning(
+                    f"Order book diff out of sequence for {ex_trading_pair}: "
+                    f"expected prevSeqId {last_seq}, got {prev_seq_id}. Skipping diff and waiting for resync."
+                )
+                # Reset tracking and trigger an immediate HTTP snapshot to realign instead of waiting for periodic one.
+                self._last_seq_ids[ex_trading_pair] = None
+                try:
+                    snapshot = await self._order_book_snapshot(trading_pair=trading_pair)
+                    message_queue.put_nowait(snapshot)
+                    self.logger().info(f"Requested HTTP snapshot for {trading_pair} after sequence gap.")
+                except Exception:
+                    self.logger().exception(f"Failed to refresh snapshot for {trading_pair} after sequence gap.")
+                continue
+
+            timestamp: float = int(diff_data["ts"])
+            update_id: int = int(timestamp)
             ct_val = self._trading_rules[ex_trading_pair]
 
             order_book_message_content = {
@@ -342,18 +365,23 @@ class OkxPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
                 timestamp)
 
             message_queue.put_nowait(diff_message)
+            self._last_seq_ids[ex_trading_pair] = seq_id
 
     async def _parse_order_book_snapshot_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
-        trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(symbol=raw_message["arg"]["instId"])
+        await self._set_trading_rules()
+        ex_trading_pair = raw_message["arg"]["instId"]
+        trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(symbol=ex_trading_pair)
         snapshot_data = raw_message["data"][0]
+        seq_id = int(snapshot_data.get("seqId", 0))
+        ct_val = self._trading_rules[ex_trading_pair]
         snapshot_timestamp: float = int(snapshot_data["ts"])
         update_id: int = int(snapshot_timestamp)
 
         order_book_message_content = {
             "trading_pair": trading_pair,
             "update_id": update_id,
-            "bids": [(bid[0], bid[1]) for bid in snapshot_data["bids"]],
-            "asks": [(ask[0], ask[1]) for ask in snapshot_data["asks"]],
+            "bids": [(bid[0], str(float(bid[1]) * ct_val)) for bid in snapshot_data["bids"]],
+            "asks": [(ask[0], str(float(ask[1]) * ct_val)) for ask in snapshot_data["asks"]],
         }
         snapshot_msg: OrderBookMessage = OrderBookMessage(
             OrderBookMessageType.SNAPSHOT,
@@ -361,6 +389,7 @@ class OkxPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             snapshot_timestamp)
 
         message_queue.put_nowait(snapshot_msg)
+        self._last_seq_ids[ex_trading_pair] = seq_id
 
     async def _parse_trade_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
         trade_updates = raw_message["data"]
@@ -441,7 +470,7 @@ class OkxPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             elif (event_channel == CONSTANTS.WS_ORDER_BOOK_400_DEPTH_100_MS_EVENTS_CHANNEL
                   and event_message["action"] == "snapshot"):
                 channel = self._snapshot_messages_queue_key
-            elif event_channel == CONSTANTS.WS_INSTRUMENTS_INFO_CHANNEL:
+            elif event_channel == CONSTANTS.WS_FUNDING_INFO_CHANNEL:
                 channel = self._funding_info_messages_queue_key
             elif event_channel == CONSTANTS.WS_MARK_PRICE_CHANNEL:
                 channel = self._mark_price_queue_key
