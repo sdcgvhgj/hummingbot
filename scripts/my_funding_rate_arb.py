@@ -1644,6 +1644,17 @@ class FundingRateArbitrage(StrategyV2Base):
                 self.logger().info("[status-dump] Status dump thread stopped")
         except Exception as e:
             self.logger().warning(f"[status-dump] Failed to stop thread: {e}")
+        # 停止动态TopK扫描任务，避免策略停止后继续重置市场订阅
+        try:
+            if self._dynamic_scan_task is not None and not self._dynamic_scan_task.done():
+                self._dynamic_scan_task.cancel()
+                try:
+                    await self._dynamic_scan_task
+                except asyncio.CancelledError:
+                    pass
+                self.logger().info("[dynamic-topk] Scanner task stopped")
+        except Exception as e:
+            self.logger().warning(f"[dynamic-topk] Failed to stop scanner: {e}")
         # 停止内存监控
         try:
             if self._mem_monitor is not None:

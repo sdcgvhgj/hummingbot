@@ -249,7 +249,12 @@ class ExecutorBase(RunnableBase):
         """
         for connector in self.connectors.values():
             for event_pair in self._event_pairs:
-                connector.add_listener(event_pair[0], event_pair[1])
+                try:
+                    connector.add_listener(event_pair[0], event_pair[1])
+                except Exception as e:
+                    self.logger().warning(
+                        f"Failed to add listener {event_pair[0].name} on {getattr(connector, 'name', connector)}: {e}",
+                        exc_info=True)
 
     def unregister_events(self):
         """
@@ -257,7 +262,12 @@ class ExecutorBase(RunnableBase):
         """
         for connector in self.connectors.values():
             for event_pair in self._event_pairs:
-                connector.remove_listener(event_pair[0], event_pair[1])
+                try:
+                    connector.remove_listener(event_pair[0], event_pair[1])
+                except Exception as e:
+                    self.logger().warning(
+                        f"Failed to remove listener {event_pair[0].name} on {getattr(connector, 'name', connector)}: {e}",
+                        exc_info=True)
 
     def adjust_order_candidates(self, exchange: str, order_candidates: List[OrderCandidate]) -> List[OrderCandidate]:
         """
@@ -320,7 +330,8 @@ class ExecutorBase(RunnableBase):
         :param trading_pair: The trading pair.
         :return: The order book.
         """
-        return self.connectors[connector_name].get_order_book(connector_name, trading_pair)
+        # Connector.get_order_book expects only the trading pair; passing the connector name caused a TypeError.
+        return self.connectors[connector_name].get_order_book(trading_pair)
 
     def get_balance(self, connector_name: str, asset: str):
         """
