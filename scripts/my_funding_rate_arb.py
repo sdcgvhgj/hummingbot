@@ -408,6 +408,19 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Trigger snapshot when RSS grows by MB (0=disable, e.g. 256): ",
             "prompt_on_new": True}
     )
+    # Hard guard to throttle trading and force a snapshot when RSS is too high
+    memory_guard_limit_mb: int = Field(
+        default=0,
+        json_schema_extra={
+            "prompt": lambda mi: "Hard RSS guard in MB to pause/limit trading (0=disable, e.g. 2300): ",
+            "prompt_on_new": True}
+    )
+    memory_guard_check_interval_sec: int = Field(
+        default=30,
+        json_schema_extra={
+            "prompt": lambda mi: "RSS guard check interval seconds (e.g. 30): ",
+            "prompt_on_new": True}
+    )
     # Telegram 通知（可选）
     telegram_bot_token: str = Field(
         default="",
@@ -488,6 +501,8 @@ class FundingRateArbitrage(StrategyV2Base):
         self._mem_monitor = None
         self._status_dump_thread = None
         self._status_dump_stop = threading.Event()
+        self._last_mem_guard_check = 0.0
+        self._mem_guard_triggered = False
 
         # EMA price smoothing state
         try:
@@ -785,6 +800,61 @@ class FundingRateArbitrage(StrategyV2Base):
         self.logger().info(f"[consec] stop_consecutive_check_pass token={token} now={now_sec}")
         return True
 
+    # ------------------------
+    # Memory guard (lightweight, always on if limit set)
+    # ------------------------
+    def _current_rss_bytes(self) -> int:
+        if _HAS_PSUTIL:
+            try:
+                return psutil.Process().memory_info().rss
+            except Exception:
+                pass
+        try:
+            with open("/proc/self/status", "r") as f:
+                text = f.read()
+            m = re.search(r"VmRSS:\\s+(\\d+)\\s+kB", text)
+            if m:
+                return int(m.group(1)) * 1024
+        except Exception:
+            pass
+        return 0
+
+    def _memory_guard_tick(self) -> None:
+        try:
+            limit_mb = int(getattr(self.config, "memory_guard_limit_mb", 0) or 0)
+            if limit_mb <= 0:
+                return
+            interval = max(5, int(getattr(self.config, "memory_guard_check_interval_sec", 30)))
+            now = time.time()
+            if now - self._last_mem_guard_check < interval:
+                return
+            self._last_mem_guard_check = now
+            rss = self._current_rss_bytes()
+            if rss <= 0:
+                return
+            limit_bytes = limit_mb * 1024 * 1024
+            if rss >= limit_bytes:
+                if not self._mem_guard_triggered:
+                    self.logger().warning(
+                        f"[mem-guard] RSS {rss/(1024*1024):.1f} MB >= {limit_mb} MB, pausing new entries and dumping snapshot")
+                self._mem_guard_triggered = True
+                try:
+                    gc.collect()
+                except Exception:
+                    pass
+                try:
+                    if self._mem_monitor is not None:
+                        self._mem_monitor._begin_tracemalloc_session(300)
+                        self._mem_monitor._dump_snapshot(reason="guard_rss")
+                except Exception as e:
+                    self.logger().debug(f"[mem-guard] snapshot failed: {e}")
+            elif self._mem_guard_triggered and rss < limit_bytes * 0.9:
+                self._mem_guard_triggered = False
+                self.logger().info(
+                    f"[mem-guard] RSS recovered to {rss/(1024*1024):.1f} MB (<{limit_mb} MB), resuming creation")
+        except Exception as e:
+            self.logger().debug(f"[mem-guard] check failed: {e}")
+
     def create_actions_proposal(self) -> List[CreateExecutorAction]:
         """
         In this method we are going to evaluate if a new set of positions has to be created for each of the tokens that
@@ -794,6 +864,7 @@ class FundingRateArbitrage(StrategyV2Base):
         at market to open the possibilities for other people to create variations like sending limit position executors
         and if one gets filled buy market the other one to improve the entry prices.
         """
+        self._memory_guard_tick()
         self.create_action_cool_down -= 1
         if self.create_action_cool_down > 0:
             self.logger().debug(f"Create action cool down: {self.create_action_cool_down}")
@@ -845,6 +916,11 @@ class FundingRateArbitrage(StrategyV2Base):
                 if self.is_stopping_creating_actions:
                     self.logger().debug(
                         f"Stopping creating actions, skipping creation of executors for {token}")
+                    continue
+
+                if self._mem_guard_triggered:
+                    self.logger().debug(
+                        f"[mem-guard] Mem guard triggered, skipping creation of executors for {token}")
                     continue
                 
                 if not self.good_time_to_trade():
@@ -969,6 +1045,7 @@ class FundingRateArbitrage(StrategyV2Base):
         pnl of each of the executors at the cost of closing the open position at market.
         If that PNL is greater than the profitability_to_take_profit
         """
+        self._memory_guard_tick()
         stop_executor_actions = []
         stopped_tokens = []
         for token, funding_arbitrage_info in self.active_funding_arbitrages.items():
