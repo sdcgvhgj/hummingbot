@@ -323,10 +323,10 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Enter the min funding rate profitability to enter in a position (e.g. 0.001): ",
             "prompt_on_new": True}
     )
-    min_price_profitability: Decimal = Field(
+    min_price_diff: Decimal = Field(
         default=0.001,
         json_schema_extra={
-            "prompt": lambda mi: "Enter the min price profitability to enter in a position (e.g. 0.001): ",
+            "prompt": lambda mi: "Enter the min price diff to enter in a position (e.g. 0.001): ",
             "prompt_on_new": True}
     )
     min_take_profit: Decimal = Field(
@@ -731,7 +731,7 @@ class FundingRateArbitrage(StrategyV2Base):
 
     def heuristic_profitability_evaluation(self, price_1, price_2, fee_1, fee_2, rate_1, rate_2, time_to_funding, i_price_diff):
         i_price_diff = max(0, i_price_diff)
-        price_profit = (price_2 - price_1 - i_price_diff) / price_1 - self.config.min_price_profitability
+        price_profit = (price_2 - price_1 - i_price_diff) / price_1 - self.config.min_price_diff
         funding_rate_profit = rate_2 - rate_1
         profit_rate = (price_profit + funding_rate_profit - fee_1 * 2 - fee_2 * 2) / time_to_funding
         return profit_rate
@@ -894,7 +894,8 @@ class FundingRateArbitrage(StrategyV2Base):
                 rate_1, rate_2, price_1, price_2, fee_1, fee_2, i_price_diff = best_combination
 
             if expected_profitability >= self.config.min_trade_profitability \
-                and rate_2 - rate_1 >= self.config.min_funding_profitability:
+                and rate_2 - rate_1 >= self.config.min_funding_profitability \
+                and (price_2 - price_1 - i_price_diff) / price_1 >= self.config.min_price_diff:
                 enough_1, balance_1 = self.enough_balance(connector_1)
                 enough_2, balance_2 = self.enough_balance(connector_2)
                 if not enough_1 or not enough_2:
@@ -1156,7 +1157,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 elif rate_diff < 0 and profitability < self.config.min_take_profit:
                     stop_loss_condition = True
                     stop_loss_type = "2"
-                elif price_diff < self.config.min_price_profitability and rate_diff < self.config.min_funding_profitability:
+                elif price_diff < self.config.min_price_diff and rate_diff < self.config.min_funding_profitability:
                     stop_loss_condition = True
                     stop_loss_type = "3"
 
