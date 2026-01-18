@@ -589,7 +589,11 @@ class FundingRateArbitrage(StrategyV2Base):
         for connector_name in self.token_supported_exchange(token):
             connector = self.connectors[connector_name]
             trading_pair = self.get_trading_pair_for_connector(token, connector_name)
-            funding_rates[connector_name] = connector.get_funding_info(trading_pair)
+            try:
+                funding_rates[connector_name] = connector.get_funding_info(trading_pair)
+            except Exception as e:
+                # Keep running even if one connector fails to respond
+                self.logger().warning(f"Failed to get funding info for {trading_pair} on {connector_name}: {e}")
         return funding_rates
 
     def get_price_and_fee_with_cache(self, prices_and_fees_cache: Dict, connector_name, token: str, side: TradeType):

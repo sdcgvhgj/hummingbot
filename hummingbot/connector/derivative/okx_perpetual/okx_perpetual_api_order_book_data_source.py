@@ -1,4 +1,5 @@
 import asyncio
+import math
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -118,18 +119,37 @@ class OkxPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
 
     # 3 - Get Funding Info REST
     async def get_funding_info(self, trading_pair: str) -> FundingInfo:
+        self.logger().debug(f"[debug okx] get_funding_info begin")
         funding_info_response = await self._request_complete_funding_info(trading_pair)
         index_price = funding_info_response[0]["data"][0]
         mark_price = funding_info_response[1]["data"][0]
         funding_data = funding_info_response[2]["data"][0]
+        import time
+        # now_ms = int(self._connector.current_timestamp * 1e3)
+        now_ms = int(time.time() * 1000)
+        candidate_ts_ms = []
+        for key in ("fundingTime", "nextFundingTime"):
+            value = funding_data.get(key)
+            if value is None:
+                continue
+            ts_value = float(value)
+            if math.isnan(ts_value) or math.isinf(ts_value):
+                continue
+            candidate_ts_ms.append(ts_value)
+        future_ts_ms = [ts for ts in candidate_ts_ms if ts > now_ms]
+        next_funding_ts_ms = min(future_ts_ms) if future_ts_ms else (max(candidate_ts_ms) if candidate_ts_ms else 0)
+        self.logger().debug(f"[debug okx] get_funding_info: {now_ms=}, {candidate_ts_ms=}")
+        funding_rate = funding_data.get("fundingRate")
+
         funding_info = FundingInfo(
             trading_pair=trading_pair,
             index_price=Decimal(str(index_price["idxPx"])),
             mark_price=Decimal(str(mark_price["markPx"])),
-            next_funding_utc_timestamp=int(float(funding_data["fundingTime"]) * 1e-3),
-            rate=Decimal(str(funding_data["fundingRate"])),
+            next_funding_utc_timestamp=int(float(next_funding_ts_ms) * 1e-3),
+            rate=Decimal(str(funding_rate)),
         )
-        self.logger().debug(f"[debug okx] get_funding_info: {funding_info=}")
+        import json
+        self.logger().debug(f"[debug okx] get_funding_info: {funding_info.trading_pair=},{funding_info.index_price=},{funding_info.mark_price=},{funding_info.next_funding_utc_timestamp=},{funding_info.rate=}")
         return funding_info
 
     async def _request_complete_funding_info(self, trading_pair: str):

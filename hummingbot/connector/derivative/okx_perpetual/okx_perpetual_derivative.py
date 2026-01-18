@@ -839,19 +839,31 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
 
         You may refer to "pnl" for the fee payment
         """
+        # OKX bills endpoint defaults to the last 100 records. Restrict to funding fee type (8) and the specific
+        # instrument to minimize data and avoid 429 rate‑limit errors.
         params = {
             "instType": "SWAP",
-            "type": 8
+            "type": 8,
+            "instId": await self.exchange_symbol_associated_to_pair(trading_pair),
+            "limit": 20,  # small page to cut response size
         }
         raw_response: Dict[str, Any] = await self._api_get(
             path_url=CONSTANTS.REST_BILLS_DETAILS[CONSTANTS.ENDPOINT],
             params=params,
             is_auth_required=True,
+            return_err=True,  # prevent raising on 429 so we can handle gracefully
             trading_pair=trading_pair,
         )
-        data: List[Dict[str, Any]] = raw_response.get("data")
+        # If the request was rate limited or returned an error, bail out without raising.
+        if str(raw_response.get("code")) != CONSTANTS.RET_CODE_OK:
+            self.logger().network(
+                f"OKX funding payment fetch failed for {trading_pair}: code={raw_response.get('code')} msg={raw_response.get('msg')}"
+            )
+            return 0, Decimal("-1"), Decimal("-1")
+
+        data: List[Dict[str, Any]] = raw_response.get("data", [])
         ex_trading_pair = await self.exchange_symbol_associated_to_pair(trading_pair)
-        trading_pair_data = [bill for bill in data if bill["instId"] == ex_trading_pair]
+        trading_pair_data = [bill for bill in data if bill.get("instId") == ex_trading_pair]
         payment = Decimal("-1")
         if not trading_pair_data:
             # An empty funding fee/payment is retrieved.
