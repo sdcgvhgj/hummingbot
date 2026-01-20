@@ -316,14 +316,37 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
         return price
 
     async def get_last_traded_prices(self, trading_pairs: List[str] = None) -> Dict[str, float]:
+        if trading_pairs:
+            trading_pairs = list(dict.fromkeys(trading_pairs))  # de-dup while preserving order
+            if len(trading_pairs) == 1:
+                pair = trading_pairs[0]
+                return {pair: await self._get_last_traded_price(pair)}
+
         params = {"instType": "SWAP"}
+        trading_pairs_set = set(trading_pairs) if trading_pairs else None
 
         resp_json = await self._api_get(
             path_url=CONSTANTS.REST_LATEST_SYMBOL_INFORMATION[CONSTANTS.ENDPOINT],
             params=params,
         )
 
-        last_traded_prices = {ticker["instId"].replace("-SWAP", ""): float(ticker["last"]) for ticker in resp_json["data"]}
+        last_traded_prices: Dict[str, float] = {}
+        for ticker in resp_json.get("data", []):
+            inst_id = ticker.get("instId")
+            last_str = ticker.get("last")
+            if not inst_id or not last_str:
+                continue
+
+            trading_pair = inst_id.replace("-SWAP", "")
+            if trading_pairs_set and trading_pair not in trading_pairs_set:
+                continue
+
+            try:
+                last_traded_prices[trading_pair] = float(last_str)
+            except (TypeError, ValueError):
+                # Skip malformed prices instead of failing the whole call
+                self.logger().debug(f"Skipping ticker with invalid last price: {inst_id}={last_str}")
+
         return last_traded_prices
 
     async def _update_balances(self):
