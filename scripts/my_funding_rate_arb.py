@@ -518,6 +518,7 @@ class FundingRateArbitrage(StrategyV2Base):
 
         self.status_active_arbitrage_info = None
         self.status_stopped_arbitrage_info = None
+        self._fee_cache = {}
 
     def start(self, clock: Clock, timestamp: float) -> None:
         """
@@ -599,6 +600,7 @@ class FundingRateArbitrage(StrategyV2Base):
     def get_price_and_fee_with_cache(self, prices_and_fees_cache: Dict, connector_name, token: str, side: TradeType):
         if connector_name in prices_and_fees_cache:
             return prices_and_fees_cache[connector_name]
+
         trading_pair = self.get_trading_pair_for_connector(token, connector_name)
         raw_price = Decimal(self.market_data_provider.get_price_for_quote_volume(
             connector_name=connector_name,
@@ -607,16 +609,20 @@ class FundingRateArbitrage(StrategyV2Base):
             is_buy=side == TradeType.BUY,
         ).result_price)
         price = self._ema_update_and_get(connector_name, trading_pair, raw_price)
-        fee = self.connectors[connector_name].get_fee(
-            base_currency=trading_pair.split("-")[0],
-            quote_currency=trading_pair.split("-")[1],
-            order_type=OrderType.MARKET,
-            order_side=TradeType.BUY,
-            amount=self.config.position_size_quote / price,
-            price=price,
-            is_maker=False,
-            position_action=PositionAction.OPEN
-        ).percent
+
+        if connector_name not in self._fee_cache:
+            self._fee_cache[connector_name] = self.connectors[connector_name].get_fee(
+                base_currency=trading_pair.split("-")[0],
+                quote_currency=trading_pair.split("-")[1],
+                order_type=OrderType.MARKET,
+                order_side=TradeType.BUY,
+                amount=self.config.position_size_quote / price,
+                price=price,
+                is_maker=False,
+                position_action=PositionAction.OPEN
+            ).percent
+
+        fee = self._fee_cache[connector_name]
         prices_and_fees_cache[connector_name] = (price, fee)
         return (price, fee)
 
