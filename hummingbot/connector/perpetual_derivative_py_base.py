@@ -25,6 +25,7 @@ from hummingbot.core.utils.async_utils import safe_ensure_future, safe_gather
 if TYPE_CHECKING:
     from hummingbot.client.config.config_helpers import ClientConfigAdapter
 
+SLEEP_SECS = 1 # sleep 1s when too many request error happened
 
 class PerpetualDerivativePyBase(ExchangePyBase, ABC):
     VALID_POSITION_ACTIONS = [PositionAction.OPEN, PositionAction.CLOSE]
@@ -404,7 +405,18 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
     async def _update_funding_info(self):
         self.logger().debug("[funding polling debug] PerpetualDerivativePyBase: Updating funding info")
         for trading_pair in self.trading_pairs:
-            new_funding_info = await self._orderbook_ds.get_funding_info(trading_pair)
+            try:
+                new_funding_info = await self._orderbook_ds.get_funding_info(trading_pair)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.logger().network(
+                    f"Error fetching funding info via REST for {trading_pair}. Sleep {SLEEP_SECS}s.",
+                    exc_info=True,
+                    app_warning_msg=f"Could not fetch funding info for {trading_pair}. Check network connection."
+                )
+                await asyncio.sleep(SLEEP_SECS)
+                continue
             pretty_time = datetime.utcfromtimestamp(new_funding_info.next_funding_utc_timestamp).strftime('%Y-%m-%d %H:%M:%S UTC')
             self.logger().debug(
                 f"[funding info REST] updated for {trading_pair} on domain {self._domain}: "
@@ -414,18 +426,31 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
                 f"premium_index={(new_funding_info.mark_price - new_funding_info.index_price)/new_funding_info.index_price:>7.3%}, "
                 f"rate={new_funding_info.rate:>7.3%}, "
             )
-            funding_info = self._perpetual_trading._funding_info[trading_pair]
-            funding_info.update(FundingInfoUpdate(
-                trading_pair=trading_pair,
-                index_price=new_funding_info.index_price,
-                mark_price=new_funding_info.mark_price,
-                next_funding_utc_timestamp=new_funding_info.next_funding_utc_timestamp,
-                rate=new_funding_info.rate,
-            ))
+            if trading_pair not in self._perpetual_trading._funding_info:
+                self._perpetual_trading.initialize_funding_info(new_funding_info)
+            else:
+                funding_info = self._perpetual_trading._funding_info[trading_pair]
+                funding_info.update(FundingInfoUpdate(
+                    trading_pair=trading_pair,
+                    index_price=new_funding_info.index_price,
+                    mark_price=new_funding_info.mark_price,
+                    next_funding_utc_timestamp=new_funding_info.next_funding_utc_timestamp,
+                    rate=new_funding_info.rate,
+                ))
 
     async def _init_funding_info(self):
         for trading_pair in self.trading_pairs:
-            funding_info = await self._orderbook_ds.get_funding_info(trading_pair)
+            try:
+                funding_info = await self._orderbook_ds.get_funding_info(trading_pair)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.logger().network(
+                    f"Error initializing funding info via REST for {trading_pair}.",
+                    exc_info=True,
+                    app_warning_msg=f"Could not initialize funding info for {trading_pair}. Check network connection."
+                )
+                continue
             pretty_time = datetime.utcfromtimestamp(funding_info.next_funding_utc_timestamp).strftime('%Y-%m-%d %H:%M:%S UTC')
             self.logger().debug(
                 f"[funding info REST] initialized for {trading_pair} on domain {self._domain}: "
@@ -470,11 +495,12 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
             raise
         except Exception:
             self.logger().network(
-                f"Unexpected error while fetching last fee payment for {trading_pair}.",
+                f"Unexpected error while fetching last fee payment for {trading_pair}. Sleep {SLEEP_SECS}s.",
                 exc_info=True,
                 app_warning_msg=f"Could not fetch last fee payment for {trading_pair}. Check network connection."
             )
             fetch_success = False
+            await asyncio.sleep(SLEEP_SECS)
         if fetch_success:
             self._emit_funding_payment_event(trading_pair, timestamp, funding_rate, payment_amount, fire_event_on_new)
         return fetch_success

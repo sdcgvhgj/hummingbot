@@ -859,7 +859,8 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
             self.logger().network(
                 f"OKX funding payment fetch failed for {trading_pair}: code={raw_response.get('code')} msg={raw_response.get('msg')}"
             )
-            return 0, Decimal("-1"), Decimal("-1")
+            formatted_ret_code = self._format_ret_code_for_print(raw_response.get("code"))
+            raise IOError(f"{formatted_ret_code} - {raw_response.get('msg')}")
 
         data: List[Dict[str, Any]] = raw_response.get("data", [])
         ex_trading_pair = await self.exchange_symbol_associated_to_pair(trading_pair)

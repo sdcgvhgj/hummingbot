@@ -119,7 +119,7 @@ class OkxPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
 
     # 3 - Get Funding Info REST
     async def get_funding_info(self, trading_pair: str) -> FundingInfo:
-        self.logger().debug(f"[debug okx] get_funding_info begin")
+        self.logger().debug(f"[debug okx] get_funding_info: {trading_pair=} begin")
         funding_info_response = await self._request_complete_funding_info(trading_pair)
         index_price = funding_info_response[0]["data"][0]
         mark_price = funding_info_response[1]["data"][0]
