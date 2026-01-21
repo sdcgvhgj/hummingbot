@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from hummingbot.client.config.config_helpers import ClientConfigAdapter
 
 SLEEP_SECS = 1 # sleep 1s when too many request error happened
+MAX_FUNDING_PAYMENT_FETCH_TRIES = 3
 
 class PerpetualDerivativePyBase(ExchangePyBase, ABC):
     VALID_POSITION_ACTIONS = [PositionAction.OPEN, PositionAction.CLOSE]
@@ -487,22 +488,31 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
             raise
 
     async def _update_funding_payment(self, trading_pair: str, fire_event_on_new: bool) -> bool:
-        fetch_success = True
+        fetch_success = False
         timestamp = funding_rate = payment_amount = 0
-        try:
-            timestamp, funding_rate, payment_amount = await self._fetch_last_fee_payment(trading_pair=trading_pair)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            self.logger().network(
-                f"Unexpected error while fetching last fee payment for {trading_pair}. Sleep {SLEEP_SECS}s.",
-                exc_info=True,
-                app_warning_msg=f"Could not fetch last fee payment for {trading_pair}. Check network connection."
-            )
-            fetch_success = False
-            await asyncio.sleep(SLEEP_SECS)
+        attempt = 0
+        while attempt < MAX_FUNDING_PAYMENT_FETCH_TRIES and not fetch_success:
+            attempt += 1
+            try:
+                timestamp, funding_rate, payment_amount = await self._fetch_last_fee_payment(trading_pair=trading_pair)
+                fetch_success = True
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.logger().network(
+                    f"Unexpected error while fetching last fee payment for {trading_pair}. Attempt {attempt}/{MAX_FUNDING_PAYMENT_FETCH_TRIES}.",
+                    exc_info=True,
+                    app_warning_msg=f"Could not fetch last fee payment for {trading_pair}. Check network connection."
+                )
+                if attempt < MAX_FUNDING_PAYMENT_FETCH_TRIES:
+                    await asyncio.sleep(SLEEP_SECS)
         if fetch_success:
             self._emit_funding_payment_event(trading_pair, timestamp, funding_rate, payment_amount, fire_event_on_new)
+        else:
+            self.logger().network(
+                f"Failed to fetch last fee payment for {trading_pair} after {MAX_FUNDING_PAYMENT_FETCH_TRIES} attempts.",
+                app_warning_msg=f"Could not fetch last fee payment for {trading_pair}. Check network connection."
+            )
         return fetch_success
 
     def _emit_funding_payment_event(
