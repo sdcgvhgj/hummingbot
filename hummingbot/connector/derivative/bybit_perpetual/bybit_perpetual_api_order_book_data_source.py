@@ -66,7 +66,8 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         url_instruments = web_utils.get_rest_url_for_endpoint(endpoint=endpoint_instruments,
                                                               trading_pair=trading_pair,
                                                               domain=self._domain)
-        limit_id_instruments = web_utils.get_rest_api_limit_id_for_endpoint(endpoint_instruments, trading_pair=trading_pair)
+        # Use base limit id (without pair suffix) to align with defined throttler limits
+        limit_id_instruments = web_utils.get_rest_api_limit_id_for_endpoint(endpoint_instruments)
         instruments_resp = await rest_assistant.execute_request(
             url=url_instruments,
             throttler_limit_id=limit_id_instruments,
