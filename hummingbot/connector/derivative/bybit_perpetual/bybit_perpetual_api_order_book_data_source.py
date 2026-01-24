@@ -34,6 +34,7 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         self._api_factory = api_factory
         self._domain = domain
         self._nonce_provider = NonceCreator.for_microseconds()
+        self._last_funding_interval = None
 
     async def get_last_traded_prices(self, trading_pairs: List[str], domain: Optional[str] = None) -> Dict[str, float]:
         return await self._connector.get_last_traded_prices(trading_pairs=trading_pairs)
@@ -60,12 +61,36 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             raise ValueError(f"Failed to get funding info for {trading_pair}")
         general_info = funding_info_response["result"]["list"][0]
 
+        # Extra call to instruments info to obtain fundingInterval (minutes)
+        endpoint_instruments = CONSTANTS.QUERY_SYMBOL_ENDPOINT
+        url_instruments = web_utils.get_rest_url_for_endpoint(endpoint=endpoint_instruments,
+                                                              trading_pair=trading_pair,
+                                                              domain=self._domain)
+        limit_id_instruments = web_utils.get_rest_api_limit_id_for_endpoint(endpoint_instruments, trading_pair=trading_pair)
+        instruments_resp = await rest_assistant.execute_request(
+            url=url_instruments,
+            throttler_limit_id=limit_id_instruments,
+            params=params,
+            method=RESTMethod.GET,
+        )
+        funding_interval = None
+        try:
+            instruments_list = instruments_resp.get("result", {}).get("list") or []
+            if instruments_list:
+                interval_minutes = instruments_list[0].get("fundingInterval")
+                if interval_minutes is not None:
+                    funding_interval = int(float(interval_minutes)) * 60
+        except Exception:
+            funding_interval = None
+        self._last_funding_interval = funding_interval
+
         funding_info = FundingInfo(
             trading_pair=trading_pair,
             index_price=Decimal(str(general_info["indexPrice"])),
             mark_price=Decimal(str(general_info["markPrice"])),
             next_funding_utc_timestamp=int(general_info["nextFundingTime"]) // 1000,
             rate=Decimal(str(general_info["fundingRate"])),
+            funding_interval=funding_interval,
         )
         return funding_info
 
@@ -269,6 +294,12 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
                 info_update.next_funding_utc_timestamp = int(entry["nextFundingTime"]) // 1e3
             if "fundingRate" in entry:
                 info_update.rate = Decimal(str(entry["fundingRate"]))
+            if "fundingInterval" in entry:
+                try:
+                    self._last_funding_interval = int(float(entry["fundingInterval"])) * 60
+                except Exception:
+                    pass
+            info_update.funding_interval = self._last_funding_interval
             message_queue.put_nowait(info_update)
 
     async def _order_book_snapshot(self, trading_pair: str) -> OrderBookMessage:

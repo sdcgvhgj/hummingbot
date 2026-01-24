@@ -364,6 +364,12 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Enter x such that only open when next funding is at least x minutes (e.g. 10): ",
             "prompt_on_new": True}
     )
+    max_hold_time_minutes: int = Field(
+        default=120,
+        json_schema_extra={
+            "prompt": lambda mi: "Force-close positions after holding this many minutes (e.g. 120): ",
+            "prompt_on_new": True}
+    )
     # Dynamic Top-K scanning controls
     dynamic_topk_enabled: bool = Field(
         default=False,
@@ -466,7 +472,9 @@ class FundingRateArbitrage(StrategyV2Base):
     }
     funding_payment_interval_map = {
         "binance_perpetual": 60 * 60 * 8,
-        "hyperliquid_perpetual": 60 * 60 * 1
+        "hyperliquid_perpetual": 60 * 60 * 1,
+        "okx_perpetual": 60 * 60 * 8,
+        "bybit_perpetual": 60 * 60 * 8,
     }
     position_mode_map = {
         "hyperliquid_perpetual": PositionMode.ONEWAY,
@@ -503,6 +511,11 @@ class FundingRateArbitrage(StrategyV2Base):
         self._status_dump_stop = threading.Event()
         self._last_mem_guard_check = 0.0
         self._mem_guard_triggered = False
+        self._last_insufficient_balance_alert_ts = 0.0
+        self._last_open_position_alert_ts = 0.0
+        self._last_daily_reminder_ts = 0.0
+        self._last_daily_total_balance = None
+        self._last_daily_stopped_counts = {token: 0 for token in self.config.tokens}
 
         # EMA price smoothing state
         try:
@@ -650,6 +663,8 @@ class FundingRateArbitrage(StrategyV2Base):
                     time_to_funding_2 = funding_info_report[connector_2].next_funding_utc_timestamp - self.current_timestamp
                     if funding_time_check and abs(time_to_funding_1 - time_to_funding_2) > 60:
                         continue
+                    if not self._funding_intervals_match(funding_info_report, connector_1, connector_2):
+                        continue
                     price_1, fee_1 = self.get_price_and_fee_with_cache(prices_and_fees_cache, connector_1, token, TradeType.BUY)
                     price_2, fee_2 = self.get_price_and_fee_with_cache(prices_and_fees_cache, connector_2, token, TradeType.SELL)
                     rate_1 = funding_info_report[connector_1].rate
@@ -710,6 +725,8 @@ class FundingRateArbitrage(StrategyV2Base):
                 t2 = funding_info_report[connector_2].next_funding_utc_timestamp - self.current_timestamp
                 if funding_time_check and abs(t1 - t2) > 60:
                     continue
+                if not self._funding_intervals_match(funding_info_report, connector_1, connector_2):
+                    continue
                 price_1, fee_1 = self.get_price_and_fee_with_cache(prices_and_fees_cache, connector_1, token, TradeType.BUY)
                 price_2, fee_2 = self.get_price_and_fee_with_cache(prices_and_fees_cache, connector_2, token, TradeType.SELL)
                 rate_1 = funding_info_report[connector_1].rate
@@ -745,6 +762,19 @@ class FundingRateArbitrage(StrategyV2Base):
         funding_rate_profit = rate_2 - rate_1
         profit_rate = (price_profit + funding_rate_profit - fee_1 * 2 - fee_2 * 2) / time_to_funding
         return profit_rate
+
+    def _funding_intervals_match(self, funding_info_report: Dict, connector_1: str, connector_2: str) -> bool:
+        interval_1 = getattr(funding_info_report[connector_1], "funding_interval", None) \
+            or self.funding_payment_interval_map.get(connector_1)
+        interval_2 = getattr(funding_info_report[connector_2], "funding_interval", None) \
+            or self.funding_payment_interval_map.get(connector_2)
+        if interval_1 is None or interval_2 is None:
+            # If either side lacks data, be conservative and reject pairing
+            return False
+        try:
+            return abs(int(interval_1) - int(interval_2)) <= 60  # allow 1-minute wiggle
+        except Exception:
+            return False
 
     def good_time_to_trade(self):
         cur_min = self.current_timestamp / 60 % 60
@@ -912,10 +942,27 @@ class FundingRateArbitrage(StrategyV2Base):
                     self.logger().warning(
                         f"Balance Not enough for {connector_1 if not enough_1 else connector_2} "
                         f"({(balance_1 if not enough_1 else balance_2):.3f}), didn't open positions")
+                    now_ts = self.current_timestamp
+                    if now_ts - self._last_insufficient_balance_alert_ts >= 1800:
+                        try:
+                            telegram_message = "**Balance Alert**\n"
+                            telegram_message += "```\n"
+                            telegram_message += f"Token     : {token}\n"
+                            telegram_message += f"Conn 1    : {connector_1} bal={balance_1:.3f}\n"
+                            telegram_message += f"Conn 2    : {connector_2} bal={balance_2:.3f}\n"
+                            telegram_message += f"Needed    : {float(self.config.position_size_quote) / float(self.config.leverage):.3f}\n"
+                            telegram_message += f"Time      : {self.format_utc(now_ts)}\n"
+                            telegram_message += "```\n"
+                            self._send_telegram(telegram_message)
+                        except Exception as e:
+                            self.logger().debug(f"Balance alert tg failed: {e}")
+                        self._last_insufficient_balance_alert_ts = now_ts
+                    continue
+                else:
                     continue
 
-                self.logger().info(
-                    f"Best Combination: {token} | {connector_1} | {connector_2} | {trade_side} | "
+            self.logger().info(
+                f"Best Combination: {token} | {connector_1} | {connector_2} | {trade_side} | "
                     f"rate_1={self.format_percent(rate_1)} | rate_2={self.format_percent(rate_2)} | "
                     f"price_1={price_1:.7f} | price_2={price_2:.7f} | "
                     f"i_price_diff={i_price_diff:.7f} | "
@@ -924,54 +971,54 @@ class FundingRateArbitrage(StrategyV2Base):
                     f"balance_1={balance_1:.3f} | balance_2={balance_2:.3f} | "
                     f"expected_profitability={self.format_percent(expected_profitability)} ")
 
-                if self.is_stopping_creating_actions:
-                    self.logger().debug(
-                        f"Stopping creating actions, skipping creation of executors for {token}")
-                    continue
+            if self.is_stopping_creating_actions:
+                self.logger().debug(
+                    f"Stopping creating actions, skipping creation of executors for {token}")
+                continue
 
-                if self._mem_guard_triggered:
-                    self.logger().debug(
-                        f"[mem-guard] Mem guard triggered, skipping creation of executors for {token}")
-                    continue
+            if self._mem_guard_triggered:
+                self.logger().debug(
+                    f"[mem-guard] Mem guard triggered, skipping creation of executors for {token}")
+                continue
                 
-                if not self.good_time_to_trade():
-                    self.logger().debug(f"[good_time_to_trade] Not good time to trade, skipping creation of executors for {token}")
-                    continue
+            if not self.good_time_to_trade():
+                self.logger().debug(f"[good_time_to_trade] Not good time to trade, skipping creation of executors for {token}")
+                continue
 
-                # 连续确认：记录本秒达标并检查是否满足最近N秒连续达标
-                now_sec = int(self.current_timestamp)
-                self._note_condition_hit(token, now_sec)
-                if not self._has_recent_consecutive_hits(token, now_sec):
-                    self.logger().debug(
-                        f"[consec] consecutive_check_fail token={token} now={now_sec} N={getattr(self.config, 'condition_consecutive_required', 1)}")
-                    continue
+            # 连续确认：记录本秒达标并检查是否满足最近N秒连续达标
+            now_sec = int(self.current_timestamp)
+            self._note_condition_hit(token, now_sec)
+            if not self._has_recent_consecutive_hits(token, now_sec):
+                self.logger().debug(
+                    f"[consec] consecutive_check_fail token={token} now={now_sec} N={getattr(self.config, 'condition_consecutive_required', 1)}")
+                continue
 
-                self.logger().info("Starting executors...")
-                position_executor_config_1, position_executor_config_2 = \
-                    self.get_position_executors_config(token, connector_1, connector_2, trade_side, price_1, price_2)
-                self.active_funding_arbitrages[token] = {
-                    "connector_1": connector_1,
-                    "connector_2": connector_2,
-                    "rate_1": rate_1,
-                    "rate_2": rate_2,
-                    "price_1": price_1,
-                    "price_2": price_2,
-                    "i_price_diff": i_price_diff,
-                    "fee_1": fee_1,
-                    "fee_2": fee_2,
-                    "expected_profitability": expected_profitability,
-                    "executors_ids": [position_executor_config_1.id, position_executor_config_2.id],
-                    "side": trade_side,
-                    "funding_payments": [],
-                    "start_time": self.current_timestamp,
-                    "position_prices": {
-                        connector_1: price_1,
-                        connector_2: price_2,
-                    },
-                }
-                self.create_action_cool_down = CREATE_ACTION_COOL_DOWN_COUNT
-                return [CreateExecutorAction(executor_config=position_executor_config_1),
-                        CreateExecutorAction(executor_config=position_executor_config_2)]
+            self.logger().info("Starting executors...")
+            position_executor_config_1, position_executor_config_2 = \
+                self.get_position_executors_config(token, connector_1, connector_2, trade_side, price_1, price_2)
+            self.active_funding_arbitrages[token] = {
+                "connector_1": connector_1,
+                "connector_2": connector_2,
+                "rate_1": rate_1,
+                "rate_2": rate_2,
+                "price_1": price_1,
+                "price_2": price_2,
+                "i_price_diff": i_price_diff,
+                "fee_1": fee_1,
+                "fee_2": fee_2,
+                "expected_profitability": expected_profitability,
+                "executors_ids": [position_executor_config_1.id, position_executor_config_2.id],
+                "side": trade_side,
+                "funding_payments": [],
+                "start_time": self.current_timestamp,
+                "position_prices": {
+                    connector_1: price_1,
+                    connector_2: price_2,
+                },
+            }
+            self.create_action_cool_down = CREATE_ACTION_COOL_DOWN_COUNT
+            return [CreateExecutorAction(executor_config=position_executor_config_1),
+                    CreateExecutorAction(executor_config=position_executor_config_2)]
 
         return []
 
@@ -1086,6 +1133,18 @@ class FundingRateArbitrage(StrategyV2Base):
             # pre-liquidation check
             if len(executors) != 2:
                 self.logger().debug(f"Executors not found for {token} ({len(executors)}) when stop actions proposal")
+                continue
+            try:
+                max_hold_seconds = int(getattr(self.config, "max_hold_time_minutes", 0)) * 60
+            except Exception:
+                max_hold_seconds = 0
+            if max_hold_seconds > 0 and self.current_timestamp - funding_arbitrage_info.get("start_time", 0) >= max_hold_seconds:
+                self.logger().info(f"Max hold time reached for {token}, stopping executors")
+                stopped_tokens.append(token)
+                funding_arbitrage_info['stop_reason'] = "TIME"
+                funding_arbitrage_info['stop_time'] = self.current_timestamp
+                self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
+                stop_executor_actions.extend(self.create_stop_executor_action(executors))
                 continue
             funding_payments_pnl = sum(funding_payment.amount for funding_payment in funding_arbitrage_info["funding_payments"])
             funding_payments_pnl_pct = funding_payments_pnl / self.config.position_size_quote
@@ -1314,6 +1373,51 @@ class FundingRateArbitrage(StrategyV2Base):
             self.logger().debug(f"[tg] send failed: {e}")
             return
 
+    def _maybe_send_daily_pnl_reminder(self):
+        """
+        Send a daily PnL reminder if:
+        - no active arbitrage
+        - more than 24h since last reminder
+        """
+        now_ts = self.current_timestamp
+        if len(self.active_funding_arbitrages) > 0:
+            return
+        if self._last_daily_reminder_ts == 0:
+            # initialize baseline without sending
+            self._last_daily_reminder_ts = now_ts
+            self._last_daily_total_balance = self._get_total_balance_value()
+            self._last_daily_stopped_counts = {token: len(self.stopped_funding_arbitrages.get(token, []))
+                                               for token in self.stopped_funding_arbitrages}
+            return
+        if now_ts - self._last_daily_reminder_ts < 24 * 3600:
+            return
+        cur_total = self._get_total_balance_value()
+        prev_total = self._last_daily_total_balance if self._last_daily_total_balance is not None else cur_total
+        pnl = cur_total - prev_total
+        total_stopped = {token: len(self.stopped_funding_arbitrages.get(token, []))
+                         for token in self.stopped_funding_arbitrages}
+        daily_count = sum(total_stopped.get(t, 0) - self._last_daily_stopped_counts.get(t, 0) for t in total_stopped)
+        tp_count = 0
+        for token, items in self.stopped_funding_arbitrages.items():
+            start_idx = self._last_daily_stopped_counts.get(token, 0)
+            for item in items[start_idx:]:
+                if item.get("stop_reason") == "TP":
+                    tp_count += 1
+
+        telegram_message = "**Daily PnL Summary**\n"
+        telegram_message += "```\n"
+        telegram_message += f"PnL (USD): {pnl:.3f}\n"
+        telegram_message += f"Arb Count: {daily_count}\n"
+        telegram_message += f"TP Count : {tp_count}\n"
+        telegram_message += f"Total Bal: {cur_total:.3f}\n"
+        telegram_message += f"Time     : {self.format_utc(now_ts)}\n"
+        telegram_message += "```\n"
+        self._send_telegram(telegram_message)
+
+        self._last_daily_reminder_ts = now_ts
+        self._last_daily_total_balance = cur_total
+        self._last_daily_stopped_counts = total_stopped
+
     def get_balances_info(self):
         balances_info = [{ "USDT": "Avail", "All": 0 }, { "USDT": "Total", "All": 0 }]
         for connector_name in self.connectors.keys():
@@ -1330,6 +1434,12 @@ class FundingRateArbitrage(StrategyV2Base):
                 if key != "USDT":
                     item[key] = self.format_currency(item[key])
         return balances_info
+
+    def _get_total_balance_value(self) -> float:
+        total = 0.0
+        for connector_name in self.connectors.keys():
+            total += float(self.connectors[connector_name].get_balance(self.quote_markets_map.get(connector_name, 'USDT')))
+        return total
 
     def format_status(self) -> str:
         original_status = super().format_status()
@@ -1641,6 +1751,10 @@ class FundingRateArbitrage(StrategyV2Base):
         # 之后每60秒写一次
         while True:
             _write_once()
+            try:
+                self._maybe_send_daily_pnl_reminder()
+            except Exception as e:
+                self.logger().debug(f"[daily-pnl] failed: {e}")
             await asyncio.sleep(60)
 
     async def on_stop(self):

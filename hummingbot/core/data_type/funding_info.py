@@ -14,12 +14,14 @@ class FundingInfo:
                  mark_price: Decimal,
                  next_funding_utc_timestamp: int,
                  rate: Decimal,
+                 funding_interval: Optional[int] = None,
                  ):
         self._trading_pair = trading_pair
         self._index_price = index_price
         self._mark_price = mark_price
         self._next_funding_utc_timestamp = next_funding_utc_timestamp
         self._rate = rate
+        self._funding_interval = funding_interval
 
     @property
     def trading_pair(self) -> str:
@@ -57,6 +59,17 @@ class FundingInfo:
     def rate(self, rate):
         self._rate = rate
 
+    @property
+    def funding_interval(self) -> Optional[int]:
+        """
+        Funding settlement interval in seconds (if provided by the exchange).
+        """
+        return self._funding_interval
+
+    @funding_interval.setter
+    def funding_interval(self, funding_interval: Optional[int]):
+        self._funding_interval = funding_interval
+
     def update(self, info_update: "FundingInfoUpdate"):
         update_dict = asdict(info_update)
         update_dict.pop("trading_pair")
@@ -72,3 +85,4 @@ class FundingInfoUpdate:
     mark_price: Optional[Decimal] = None
     next_funding_utc_timestamp: Optional[int] = None
     rate: Optional[Decimal] = None
+    funding_interval: Optional[int] = None

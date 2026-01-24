@@ -40,6 +40,7 @@ class OkxPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         self._last_mark_price = None
         self._last_next_funding_utc_timestamp = None
         self._last_rate = None
+        self._last_funding_interval = None
         self._trading_rules = {}
         # Track last processed seqId per exchange trading pair to detect dropped diffs
         self._last_seq_ids: Dict[str, Optional[int]] = {}
@@ -140,6 +141,8 @@ class OkxPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         next_funding_ts_ms = min(future_ts_ms) if future_ts_ms else (max(candidate_ts_ms) if candidate_ts_ms else 0)
         self.logger().debug(f"[debug okx] get_funding_info: {now_ms=}, {candidate_ts_ms=}")
         funding_rate = funding_data.get("fundingRate")
+        funding_interval = self._extract_funding_interval_seconds(funding_data)
+        self._last_funding_interval = funding_interval
 
         funding_info = FundingInfo(
             trading_pair=trading_pair,
@@ -147,10 +150,31 @@ class OkxPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             mark_price=Decimal(str(mark_price["markPx"])),
             next_funding_utc_timestamp=int(float(next_funding_ts_ms) * 1e-3),
             rate=Decimal(str(funding_rate)),
+            funding_interval=funding_interval,
         )
         import json
-        self.logger().debug(f"[debug okx] get_funding_info: {funding_info.trading_pair=},{funding_info.index_price=},{funding_info.mark_price=},{funding_info.next_funding_utc_timestamp=},{funding_info.rate=}")
+        self.logger().debug(f"[debug okx] get_funding_info: {funding_info.trading_pair=},{funding_info.index_price=},{funding_info.mark_price=},{funding_info.next_funding_utc_timestamp=},{funding_info.rate=},{funding_info.funding_interval=}")
         return funding_info
+
+    def _extract_funding_interval_seconds(self, funding_data: Dict[str, Any]) -> Optional[int]:
+        """
+        Try to infer the funding settlement interval (seconds) from funding data payload.
+        OKX `/public/funding-rate` returns both `fundingTime` and `nextFundingTime` when available;
+        the difference between them is the settlement interval (commonly 8h, or 1h when adjusted).
+        """
+        try:
+            ft = funding_data.get("fundingTime")
+            nft = funding_data.get("nextFundingTime") or funding_data.get("nextFundingRateTime")
+            interval_ms = None
+            if ft is not None and nft is not None:
+                interval_ms = abs(int(float(nft)) - int(float(ft)))
+            elif funding_data.get("fundingFeeInterval") is not None:
+                interval_ms = int(float(funding_data["fundingFeeInterval"]))
+            if interval_ms is None or interval_ms <= 0:
+                return None
+            return int(interval_ms // 1000)
+        except Exception:
+            return None
 
     async def _request_complete_funding_info(self, trading_pair: str):
         tasks = []
@@ -411,11 +435,13 @@ class OkxPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         funding_data = raw_message["data"][0]
         self._last_next_funding_utc_timestamp = int(float(funding_data["fundingTime"]) * 1e-3)
         self._last_rate = (Decimal(str(funding_data["fundingRate"])))
+        self._last_funding_interval = self._extract_funding_interval_seconds(funding_data)
         info_update = FundingInfoUpdate(trading_pair=trading_pair,
                                         index_price=self._last_index_price,
                                         mark_price=self._last_mark_price,
                                         next_funding_utc_timestamp=self._last_next_funding_utc_timestamp,
-                                        rate=self._last_rate)
+                                        rate=self._last_rate,
+                                        funding_interval=self._last_funding_interval)
         message_queue.put_nowait(info_update)
 
     async def _parse_index_price_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
@@ -427,7 +453,8 @@ class OkxPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
                                         index_price=self._last_index_price,
                                         mark_price=self._last_mark_price,
                                         next_funding_utc_timestamp=self._last_next_funding_utc_timestamp,
-                                        rate=self._last_rate)
+                                        rate=self._last_rate,
+                                        funding_interval=self._last_funding_interval)
         message_queue.put_nowait(info_update)
 
     async def _parse_mark_price_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
@@ -439,7 +466,8 @@ class OkxPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
                                         index_price=self._last_index_price,
                                         mark_price=self._last_mark_price,
                                         next_funding_utc_timestamp=self._last_next_funding_utc_timestamp,
-                                        rate=self._last_rate)
+                                        rate=self._last_rate,
+                                        funding_interval=self._last_funding_interval)
         message_queue.put_nowait(info_update)
 
     def _get_messages_queue_keys(self) -> List[str]:

@@ -426,6 +426,7 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
                 f"index_price={new_funding_info.index_price:.10f}, "
                 f"premium_index={(new_funding_info.mark_price - new_funding_info.index_price)/new_funding_info.index_price:>7.3%}, "
                 f"rate={new_funding_info.rate:>7.3%}, "
+                f"interval={new_funding_info.funding_interval//3600}h, "
             )
             if trading_pair not in self._perpetual_trading._funding_info:
                 self._perpetual_trading.initialize_funding_info(new_funding_info)
