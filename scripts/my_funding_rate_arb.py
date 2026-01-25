@@ -933,43 +933,36 @@ class FundingRateArbitrage(StrategyV2Base):
             connector_1, connector_2, trade_side, expected_profitability, \
                 rate_1, rate_2, price_1, price_2, fee_1, fee_2, i_price_diff = best_combination
 
-            if expected_profitability >= self.config.min_trade_profitability \
+            open_condition = expected_profitability >= self.config.min_trade_profitability \
                 and rate_2 - rate_1 >= self.config.min_funding_profitability \
-                and (price_2 - price_1 - i_price_diff) / price_1 >= self.config.min_price_diff:
-                enough_1, balance_1 = self.enough_balance(connector_1)
-                enough_2, balance_2 = self.enough_balance(connector_2)
-                if not enough_1 or not enough_2:
-                    self.logger().warning(
-                        f"Balance Not enough for {connector_1 if not enough_1 else connector_2} "
-                        f"({(balance_1 if not enough_1 else balance_2):.3f}), didn't open positions")
-                    now_ts = self.current_timestamp
-                    if now_ts - self._last_insufficient_balance_alert_ts >= 1800:
-                        try:
-                            telegram_message = "**Balance Alert**\n"
-                            telegram_message += "```\n"
-                            telegram_message += f"Token     : {token}\n"
-                            telegram_message += f"Conn 1    : {connector_1} bal={balance_1:.3f}\n"
-                            telegram_message += f"Conn 2    : {connector_2} bal={balance_2:.3f}\n"
-                            telegram_message += f"Needed    : {float(self.config.position_size_quote) / float(self.config.leverage):.3f}\n"
-                            telegram_message += f"Time      : {self.format_utc(now_ts)}\n"
-                            telegram_message += "```\n"
-                            self._send_telegram(telegram_message)
-                        except Exception as e:
-                            self.logger().debug(f"Balance alert tg failed: {e}")
-                        self._last_insufficient_balance_alert_ts = now_ts
-                    continue
-                else:
-                    continue
-
-            self.logger().info(
-                f"Best Combination: {token} | {connector_1} | {connector_2} | {trade_side} | "
-                    f"rate_1={self.format_percent(rate_1)} | rate_2={self.format_percent(rate_2)} | "
-                    f"price_1={price_1:.7f} | price_2={price_2:.7f} | "
-                    f"i_price_diff={i_price_diff:.7f} | "
-                    f"i_price_diff_pct={self.format_percent(i_price_diff/price_1)} | "
-                    f"fee_1={self.format_percent(fee_1)} | fee_2={self.format_percent(fee_2)} | "
-                    f"balance_1={balance_1:.3f} | balance_2={balance_2:.3f} | "
-                    f"expected_profitability={self.format_percent(expected_profitability)} ")
+                and (price_2 - price_1 - i_price_diff) / price_1 >= self.config.min_price_diff
+            
+            if not open_condition:
+                continue
+            
+            # balance check
+            enough_1, balance_1 = self.enough_balance(connector_1)
+            enough_2, balance_2 = self.enough_balance(connector_2)
+            if not enough_1 or not enough_2:
+                self.logger().warning(
+                    f"Balance Not enough for {connector_1 if not enough_1 else connector_2} "
+                    f"({(balance_1 if not enough_1 else balance_2):.3f}), didn't open positions")
+                now_ts = self.current_timestamp
+                if now_ts - self._last_insufficient_balance_alert_ts >= 1800:
+                    try:
+                        telegram_message = "**Balance Alert**\n"
+                        telegram_message += "```\n"
+                        telegram_message += f"Token     : {token}\n"
+                        telegram_message += f"Conn 1    : {connector_1} bal={balance_1:.3f}\n"
+                        telegram_message += f"Conn 2    : {connector_2} bal={balance_2:.3f}\n"
+                        telegram_message += f"Needed    : {float(self.config.position_size_quote) / float(self.config.leverage):.3f}\n"
+                        telegram_message += f"Time      : {self.format_utc(now_ts)}\n"
+                        telegram_message += "```\n"
+                        self._send_telegram(telegram_message)
+                    except Exception as e:
+                        self.logger().debug(f"Balance alert tg failed: {e}")
+                    self._last_insufficient_balance_alert_ts = now_ts
+                continue
 
             if self.is_stopping_creating_actions:
                 self.logger().debug(
@@ -994,6 +987,17 @@ class FundingRateArbitrage(StrategyV2Base):
                 continue
 
             self.logger().info("Starting executors...")
+
+            self.logger().info(
+                f"Best Combination: {token} | {connector_1} | {connector_2} | {trade_side} | "
+                    f"rate_1={self.format_percent(rate_1)} | rate_2={self.format_percent(rate_2)} | "
+                    f"price_1={price_1:.7f} | price_2={price_2:.7f} | "
+                    f"i_price_diff={i_price_diff:.7f} | "
+                    f"i_price_diff_pct={self.format_percent(i_price_diff/price_1)} | "
+                    f"fee_1={self.format_percent(fee_1)} | fee_2={self.format_percent(fee_2)} | "
+                    f"balance_1={balance_1:.3f} | balance_2={balance_2:.3f} | "
+                    f"expected_profitability={self.format_percent(expected_profitability)} ")
+
             position_executor_config_1, position_executor_config_2 = \
                 self.get_position_executors_config(token, connector_1, connector_2, trade_side, price_1, price_2)
             self.active_funding_arbitrages[token] = {
