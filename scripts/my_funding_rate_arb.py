@@ -1116,6 +1116,12 @@ class FundingRateArbitrage(StrategyV2Base):
         stopped_tokens = []
         for token, funding_arbitrage_info in self.active_funding_arbitrages.items():
             executors = self.get_executors(funding_arbitrage_info["executors_ids"])
+            connector_1 = funding_arbitrage_info["connector_1"]
+            connector_2 = funding_arbitrage_info["connector_2"]
+            c_price_1, _ = self.get_price_and_fee_with_cache( \
+                {}, connector_1, token, TradeType.SELL)
+            c_price_2, _ = self.get_price_and_fee_with_cache( \
+                {}, connector_2, token, TradeType.BUY)
             closed_ex = list(ex.close_type for ex in executors if ex.close_type)
             if len(closed_ex) > 0:
                 self.logger().warning(f"Closed executor for {token} found due to "
@@ -1125,10 +1131,8 @@ class FundingRateArbitrage(StrategyV2Base):
                 funding_arbitrage_info['stop_reason'] = "UNK"
                 funding_arbitrage_info['stop_time'] = self.current_timestamp
                 self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
-                stop_executor_actions.extend(self.create_stop_executor_action(executors))
+                stop_executor_actions.extend(self.create_stop_executor_action(executors, c_price_1, c_price_2))
                 continue
-            connector_1 = funding_arbitrage_info["connector_1"]
-            connector_2 = funding_arbitrage_info["connector_2"]
             if self.current_timestamp - funding_arbitrage_info['start_time'] > 60 and \
                         self.check_is_liquidated(connector_1, connector_2, token):
                 self.logger().debug(f"Liquidation detected for {token}, stopping executors")
@@ -1136,7 +1140,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 funding_arbitrage_info['stop_reason'] = "LIQ"
                 funding_arbitrage_info['stop_time'] = self.current_timestamp
                 self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
-                stop_executor_actions.extend(self.create_stop_executor_action(executors))
+                stop_executor_actions.extend(self.create_stop_executor_action(executors, c_price_1, c_price_2))
                 continue
             # pre-liquidation check
             if len(executors) != 2:
@@ -1152,7 +1156,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 funding_arbitrage_info['stop_reason'] = "TIME"
                 funding_arbitrage_info['stop_time'] = self.current_timestamp
                 self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
-                stop_executor_actions.extend(self.create_stop_executor_action(executors))
+                stop_executor_actions.extend(self.create_stop_executor_action(executors, c_price_1, c_price_2))
                 continue
             funding_payments_pnl = sum(funding_payment.amount for funding_payment in funding_arbitrage_info["funding_payments"])
             funding_payments_pnl_pct = funding_payments_pnl / self.config.position_size_quote
@@ -1162,10 +1166,6 @@ class FundingRateArbitrage(StrategyV2Base):
             if not a_price_1 or not a_price_2:
                 self.logger().debug(f"Skip stop actions judgement {token} because open-order didn't filled")
                 continue
-            c_price_1, _ = self.get_price_and_fee_with_cache( \
-                {}, connector_1, token, TradeType.SELL)
-            c_price_2, _ = self.get_price_and_fee_with_cache( \
-                {}, connector_2, token, TradeType.BUY)
             self._update_position_prices(token, {
                 connector_1: c_price_1,
                 connector_2: c_price_2,
