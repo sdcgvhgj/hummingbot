@@ -998,6 +998,10 @@ class FundingRateArbitrage(StrategyV2Base):
                     f"balance_1={balance_1:.3f} | balance_2={balance_2:.3f} | "
                     f"expected_profitability={self.format_percent(expected_profitability)} ")
 
+            if i_price_diff / price_1 > 0.01:
+                self.logger().debug("Abort creating actions because huge index price diff")
+                continue
+
             position_executor_config_1, position_executor_config_2 = \
                 self.get_position_executors_config(token, connector_1, connector_2, trade_side, price_1, price_2)
             self.active_funding_arbitrages[token] = {
