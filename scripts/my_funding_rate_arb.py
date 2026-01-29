@@ -470,6 +470,13 @@ class FundingRateArbitrage(StrategyV2Base):
         "hyperliquid_perpetual": "USD",
         "binance_perpetual": "USDT"
     }
+    # Funding rate caps (absolute value). A rate hits lower/upper bound if <= -cap or >= +cap.
+    # Hard-coded per connector as requested.
+    funding_rate_cap_abs_map = {
+        "okx_perpetual": Decimal("0.015"),
+        "bybit_perpetual": Decimal("0.025"),
+    }
+    funding_rate_cap_eps = Decimal("0.000001")
     funding_payment_interval_map = {
         "binance_perpetual": 60 * 60 * 8,
         "hyperliquid_perpetual": 60 * 60 * 1,
@@ -776,6 +783,12 @@ class FundingRateArbitrage(StrategyV2Base):
         except Exception:
             return False
 
+    def _get_funding_cap_abs(self, connector_name: str):
+        try:
+            return self.funding_rate_cap_abs_map.get(connector_name)
+        except Exception:
+            return None
+
     def good_time_to_trade(self):
         cur_min = self.current_timestamp / 60 % 60
         return cur_min >= 5 and cur_min <= 55
@@ -932,6 +945,20 @@ class FundingRateArbitrage(StrategyV2Base):
         for token, _, best_combination in token_rankings:
             connector_1, connector_2, trade_side, expected_profitability, \
                 rate_1, rate_2, price_1, price_2, fee_1, fee_2, i_price_diff = best_combination
+
+            cap_1 = self._get_funding_cap_abs(connector_1)
+            cap_2 = self._get_funding_cap_abs(connector_2)
+            eps = getattr(self, "funding_rate_cap_eps", Decimal("0"))
+            if cap_1 is not None and rate_1 <= -cap_1 + eps:
+                self.logger().debug(
+                    f"[cap] Skip entry: {connector_1} rate {self.format_percent(rate_1)} "
+                    f"<= -cap {self.format_percent(cap_1)}")
+                continue
+            if cap_2 is not None and rate_2 >= cap_2 - eps:
+                self.logger().debug(
+                    f"[cap] Skip entry: {connector_2} rate {self.format_percent(rate_2)} "
+                    f">= cap {self.format_percent(cap_2)}")
+                continue
 
             open_condition = expected_profitability >= self.config.min_trade_profitability \
                 and rate_2 - rate_1 >= self.config.min_funding_profitability \
