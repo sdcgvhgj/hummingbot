@@ -1245,8 +1245,7 @@ class FundingRateArbitrage(StrategyV2Base):
             # take_profit_condition = take_profit_condition and not keep_holding_condition
 
             # do not use realtime index price diff for stop loss
-            # i_price_diff = funding_info_report[connector_2].index_price - funding_info_report[connector_1].index_price
-            i_price_diff = funding_arbitrage_info['i_price_diff']
+            i_price_diff = funding_info_report[connector_2].index_price - funding_info_report[connector_1].index_price
 
             # TODO strengthen stop_loss_condition
             stop_loss_condition = False
