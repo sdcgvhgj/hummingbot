@@ -178,7 +178,30 @@ class OrderBookTracker:
                 await asyncio.sleep(30)
 
     async def _initial_order_book_for_trading_pair(self, trading_pair: str) -> OrderBook:
-        return await self._data_source.get_new_order_book(trading_pair)
+        max_retries: int = int(os.getenv("HB_OB_INIT_ORDER_BOOK_MAX_RETRIES", "-1"))
+        base_delay: float = float(os.getenv("HB_OB_INIT_ORDER_BOOK_RETRY_BASE_DELAY", "1"))
+        max_delay: float = float(os.getenv("HB_OB_INIT_ORDER_BOOK_RETRY_MAX_DELAY", "30"))
+
+        retries: int = 0
+        while True:
+            try:
+                return await self._data_source.get_new_order_book(trading_pair)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                retries += 1
+                if max_retries >= 0 and retries > max_retries:
+                    raise
+
+                delay: float = min(max_delay, base_delay * (2 ** (retries - 1)))
+                self.logger().network(
+                    f"Error initializing order book for {trading_pair}. Retrying in {delay:.1f} seconds.",
+                    exc_info=True,
+                    app_warning_msg=(
+                        f"Failed to initialize order book for {trading_pair}. Retrying in {delay:.1f} seconds."
+                    ),
+                )
+                await self._sleep(delay=delay)
 
     async def _init_order_books(self):
         """
