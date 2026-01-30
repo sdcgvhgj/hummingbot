@@ -187,10 +187,11 @@ class OkxPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         }
         endpoint_index_price = CONSTANTS.REST_INDEX_TICKERS[CONSTANTS.ENDPOINT]
         url_index_price = web_utils.get_rest_url_for_endpoint(endpoint=endpoint_index_price, domain=self._domain)
-        limit_id_index_price = web_utils.get_pair_specific_limit_id(
+        # Public endpoint – limit is IP scoped (20/2s), so use shared bucket
+        limit_id_index_price = web_utils.get_rest_api_limit_id_for_endpoint(
             method=CONSTANTS.REST_INDEX_TICKERS[CONSTANTS.METHOD],
             endpoint=endpoint_index_price,
-            trading_pair=trading_pair)
+        )
         tasks.append(rest_assistant.execute_request(
             url=url_index_price,
             throttler_limit_id=limit_id_index_price,

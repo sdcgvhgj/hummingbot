@@ -110,9 +110,18 @@ def get_rest_api_limit_id_for_endpoint(method: str, endpoint: str) -> str:
 
 
 def get_pair_specific_limit_id(method: str, endpoint: str, trading_pair: str) -> str:
-    trading_pair = "" # no trading_pair provided when building rate limits, use empty string for rate limits
+    """
+    Build a rate‑limit bucket id scoped to a specific trading pair.
+
+    OKX applies most public/private limits per instrument. The previous implementation
+    replaced the provided `trading_pair` with an empty string, effectively funneling
+    all pair‑specific requests into a single shared bucket and causing unnecessary
+    429 responses when many instruments were queried in parallel.
+    """
+    # normalized_pair = trading_pair or ""
+    normalized_pair = ""
     base_limit_id = get_rest_api_limit_id_for_endpoint(method, endpoint)
-    return f"{base_limit_id}-{trading_pair}"
+    return f"{base_limit_id}-{normalized_pair}"
 
 
 def _wss_url(endpoint: Dict[str, str], connector_variant_label: Optional[str]) -> str:
@@ -184,7 +193,13 @@ def _build_public_rate_limits():
                                                         endpoint=CONSTANTS.REST_GET_INSTRUMENTS[CONSTANTS.ENDPOINT]),
             limit=20,
             time_interval=2,
-        )
+        ),
+        RateLimit(
+            limit_id=get_rest_api_limit_id_for_endpoint(method=CONSTANTS.REST_INDEX_TICKERS[CONSTANTS.METHOD],
+                                                        endpoint=CONSTANTS.REST_INDEX_TICKERS[CONSTANTS.ENDPOINT]),
+            limit=20,
+            time_interval=2,
+        ),
     ]
     return public_rate_limits
 
@@ -216,13 +231,6 @@ def _build_private_pair_specific_rate_limits(trading_pairs: List[str]) -> List[R
                                                     trading_pair=trading_pair),
                 limit=10,
                 time_interval=2
-            ),
-            RateLimit(
-                limit_id=get_pair_specific_limit_id(method=CONSTANTS.REST_INDEX_TICKERS[CONSTANTS.METHOD],
-                                                    endpoint=CONSTANTS.REST_INDEX_TICKERS[CONSTANTS.ENDPOINT],
-                                                    trading_pair=trading_pair),
-                limit=20,
-                time_interval=2,
             ),
         ]
         rate_limits.extend(trading_pair_rate_limits)

@@ -1833,6 +1833,26 @@ class FundingRateArbitrage(StrategyV2Base):
         self.logger().info(f"[dynamic-topk] Starting REST scan across connectors: {connector_names}")
 
         async def _do_scan(temp_connectors: Dict[str, ConnectorBase]):
+            async def fetch_with_retry(action, *, retries: int = 2, base_delay: float = 1.0):
+                """
+                Best-effort retry helper for transient rate-limit responses (429/50011/Too Many Requests).
+                Avoids skipping promising pairs during dynamic-topk scans when OKX briefly throttles requests.
+                """
+                attempt = 0
+                while True:
+                    try:
+                        return await action()
+                    except Exception as e:
+                        msg = str(e)
+                        is_rate_limit = ("429" in msg) or ("Too Many Requests" in msg) or ("50011" in msg)
+                        if is_rate_limit and attempt < retries:
+                            delay = base_delay * (2 ** attempt)
+                            self.logger().debug(f"[dynamic-topk] Rate-limited ({msg}). Retry in {delay:.1f}s...")
+                            await asyncio.sleep(delay)
+                            attempt += 1
+                            continue
+                        raise
+
             # 1) Collect supported pairs per connector
             supported_pairs = {name: set(ex.trading_rules.keys()) for name, ex in temp_connectors.items()}
             self.logger().info("[dynamic-topk] Supported pairs sizes: " + ", ".join(
@@ -1874,12 +1894,12 @@ class FundingRateArbitrage(StrategyV2Base):
                         p2 = conn_pair_map[c2]
                         try:
                             # Prices
-                            price_1 = Decimal(str(await temp_connectors[c1]._get_last_traded_price(p1)))
-                            price_2 = Decimal(str(await temp_connectors[c2]._get_last_traded_price(p2)))
+                            price_1 = Decimal(str(await fetch_with_retry(lambda: temp_connectors[c1]._get_last_traded_price(p1))))
+                            price_2 = Decimal(str(await fetch_with_retry(lambda: temp_connectors[c2]._get_last_traded_price(p2))))
 
                             # Funding
-                            f1 = await temp_connectors[c1]._orderbook_ds.get_funding_info(p1)
-                            f2 = await temp_connectors[c2]._orderbook_ds.get_funding_info(p2)
+                            f1 = await fetch_with_retry(lambda: temp_connectors[c1]._orderbook_ds.get_funding_info(p1))
+                            f2 = await fetch_with_retry(lambda: temp_connectors[c2]._orderbook_ds.get_funding_info(p2))
 
                             t1 = f1.next_funding_utc_timestamp
                             t2 = f2.next_funding_utc_timestamp
