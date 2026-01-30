@@ -1906,6 +1906,16 @@ class FundingRateArbitrage(StrategyV2Base):
                             if abs(t1 - t2) > 60:
                                 self.logger().debug(f"[dynamic-topk] Skip {base} ({c1}->{c2}) due to time difference: {self.format_utc(t1)} - {self.format_utc(t2)}")
                                 continue
+                            
+                            interval_1 = getattr(f1, "funding_interval", None) or self.funding_payment_interval_map.get(c1)
+                            interval_2 = getattr(f2, "funding_interval", None) or self.funding_payment_interval_map.get(c2)
+                            try:
+                                if interval_1 is None or interval_2 is None or abs(int(interval_1) - int(interval_2)) > 60:
+                                    self.logger().debug(f"[dynamic-topk] Skip {base} ({c1}->{c2}) due to interval mismatch: {interval_1} vs {interval_2}")
+                                    continue
+                            except Exception:
+                                self.logger().debug(f"[dynamic-topk] Skip {base} ({c1}->{c2}) due to interval parse error")
+                                continue
 
                             time_to_funding_1 = t1 - time.time()
                             time_to_funding_2 = t2 - time.time()
