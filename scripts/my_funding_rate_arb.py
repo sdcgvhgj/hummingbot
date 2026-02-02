@@ -377,6 +377,12 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Enable dynamic Top-K token scanning via REST? (true/false): ",
             "prompt_on_new": True}
     )
+    funding_interval_policy: str = Field(
+        default="strict",
+        json_schema_extra={
+            "prompt": lambda mi: "Funding interval policy (strict|ratio|off): ",
+            "prompt_on_new": True}
+    )
     topk: int = Field(
         default=10,
         json_schema_extra={
@@ -771,6 +777,9 @@ class FundingRateArbitrage(StrategyV2Base):
         return profit_rate
 
     def _funding_intervals_match(self, funding_info_report: Dict, connector_1: str, connector_2: str) -> bool:
+        policy = str(getattr(self.config, "funding_interval_policy", "strict")).lower()
+        if policy == "off":
+            return True
         interval_1 = getattr(funding_info_report[connector_1], "funding_interval", None) \
             or self.funding_payment_interval_map.get(connector_1)
         interval_2 = getattr(funding_info_report[connector_2], "funding_interval", None) \
@@ -779,7 +788,15 @@ class FundingRateArbitrage(StrategyV2Base):
             # If either side lacks data, be conservative and reject pairing
             return False
         try:
-            return abs(int(interval_1) - int(interval_2)) <= 60  # allow 1-minute wiggle
+            i1 = int(interval_1)
+            i2 = int(interval_2)
+            if i1 <= 0 or i2 <= 0:
+                return False
+            if policy == "ratio":
+                ratio = i1 / i2
+                return 0.4 <= ratio <= 2.1
+            # strict: allow small wiggle
+            return abs(i1 - i2) <= 60
         except Exception:
             return False
 
@@ -1906,16 +1923,29 @@ class FundingRateArbitrage(StrategyV2Base):
                             if abs(t1 - t2) > 60:
                                 self.logger().debug(f"[dynamic-topk] Skip {base} ({c1}->{c2}) due to time difference: {self.format_utc(t1)} - {self.format_utc(t2)}")
                                 continue
-                            
-                            interval_1 = getattr(f1, "funding_interval", None) or self.funding_payment_interval_map.get(c1)
-                            interval_2 = getattr(f2, "funding_interval", None) or self.funding_payment_interval_map.get(c2)
-                            try:
-                                if interval_1 is None or interval_2 is None or abs(int(interval_1) - int(interval_2)) > 60:
-                                    self.logger().debug(f"[dynamic-topk] Skip {base} ({c1}->{c2}) due to interval mismatch: {interval_1} vs {interval_2}")
+
+                            policy = str(getattr(self.config, "funding_interval_policy", "strict")).lower()
+                            if policy != "off":
+                                interval_1 = getattr(f1, "funding_interval", None) or self.funding_payment_interval_map.get(c1)
+                                interval_2 = getattr(f2, "funding_interval", None) or self.funding_payment_interval_map.get(c2)
+                                try:
+                                    i1 = int(interval_1) if interval_1 is not None else None
+                                    i2 = int(interval_2) if interval_2 is not None else None
+                                    if i1 is None or i2 is None or i1 <= 0 or i2 <= 0:
+                                        self.logger().debug(f"[dynamic-topk] Skip {base} ({c1}->{c2}) due to missing interval: {interval_1} vs {interval_2}")
+                                        continue
+                                    if policy == "ratio":
+                                        ratio = i1 / i2
+                                        if not (0.4 <= ratio <= 2.1):
+                                            self.logger().debug(f"[dynamic-topk] Skip {base} ({c1}->{c2}) due to interval ratio: {interval_1} vs {interval_2}")
+                                            continue
+                                    else:  # strict
+                                        if abs(i1 - i2) > 60:
+                                            self.logger().debug(f"[dynamic-topk] Skip {base} ({c1}->{c2}) due to interval mismatch: {interval_1} vs {interval_2}")
+                                            continue
+                                except Exception:
+                                    self.logger().debug(f"[dynamic-topk] Skip {base} ({c1}->{c2}) due to interval parse error")
                                     continue
-                            except Exception:
-                                self.logger().debug(f"[dynamic-topk] Skip {base} ({c1}->{c2}) due to interval parse error")
-                                continue
 
                             time_to_funding_1 = t1 - time.time()
                             time_to_funding_2 = t2 - time.time()
