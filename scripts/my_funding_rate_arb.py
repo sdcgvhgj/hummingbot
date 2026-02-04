@@ -695,11 +695,18 @@ class FundingRateArbitrage(StrategyV2Base):
                     price_profit = (price_2 - price_1 - i_price_diff) / price_1
                     funding_rate_profit = rate_2 - rate_1
                     trade_profit = price_profit + funding_rate_profit - fee_1 * 2 - fee_2 * 2
+                    # Prefer live interval, fall back to static map when missing
+                    interval_1 = getattr(funding_info_report[connector_1], "funding_interval", None) \
+                        or self.funding_payment_interval_map.get(connector_1)
+                    interval_2 = getattr(funding_info_report[connector_2], "funding_interval", None) \
+                        or self.funding_payment_interval_map.get(connector_2)
+                    time_to_funding = time_to_funding_1 or time_to_funding_2
                     if float(trade_profit) > float(highest_profitability):
                         trade_side = TradeType.BUY
                         highest_profitability = trade_profit
                         best_combination = (connector_1, connector_2, trade_side, trade_profit, \
-                                            rate_1, rate_2, price_1, price_2, fee_1, fee_2, i_price_diff)
+                                            rate_1, rate_2, price_1, price_2, fee_1, fee_2, i_price_diff, \
+                                            interval_1, interval_2, time_to_funding)
         return best_combination
 
     def _ema_key(self, connector_name: str, trading_pair: str) -> str:
@@ -758,9 +765,16 @@ class FundingRateArbitrage(StrategyV2Base):
                 funding_rate_profit = rate_2 - rate_1
                 trade_profit = price_profit + funding_rate_profit - fee_1 * 2 - fee_2 * 2
 
+                interval_1 = getattr(funding_info_report[connector_1], "funding_interval", None) \
+                    or self.funding_payment_interval_map.get(connector_1)
+                interval_2 = getattr(funding_info_report[connector_2], "funding_interval", None) \
+                    or self.funding_payment_interval_map.get(connector_2)
+                time_to_funding = t1 or t2
+
                 if best_score is None or float(score) > float(best_score):
                     best_score = score
-                    best = (connector_1, connector_2, TradeType.BUY, trade_profit, rate_1, rate_2, price_1, price_2, fee_1, fee_2, i_price_diff)
+                    best = (connector_1, connector_2, TradeType.BUY, trade_profit, rate_1, rate_2, \
+                            price_1, price_2, fee_1, fee_2, i_price_diff, interval_1, interval_2, time_to_funding)
 
         return best_score, best
     
@@ -961,7 +975,8 @@ class FundingRateArbitrage(StrategyV2Base):
         # 3) 逐个尝试原有阈值逻辑，符合则开仓并返回
         for token, _, best_combination in token_rankings:
             connector_1, connector_2, trade_side, expected_profitability, \
-                rate_1, rate_2, price_1, price_2, fee_1, fee_2, i_price_diff = best_combination
+                rate_1, rate_2, price_1, price_2, fee_1, fee_2, i_price_diff, \
+                interval_1, interval_2, time_to_funding = best_combination
 
             cap_1 = self._get_funding_cap_abs(connector_1)
             cap_2 = self._get_funding_cap_abs(connector_2)
@@ -1040,7 +1055,9 @@ class FundingRateArbitrage(StrategyV2Base):
                     f"i_price_diff_pct={self.format_percent(i_price_diff/price_1)} | "
                     f"fee_1={self.format_percent(fee_1)} | fee_2={self.format_percent(fee_2)} | "
                     f"balance_1={balance_1:.3f} | balance_2={balance_2:.3f} | "
-                    f"expected_profitability={self.format_percent(expected_profitability)} ")
+                    f"expected_profitability={self.format_percent(expected_profitability)} | "
+                    f"interval_1={self.format_time(interval_1)} | interval_2={self.format_time(interval_2)} | "
+                    f"time_to_funding={self.format_time(time_to_funding)}")
 
             if i_price_diff / price_1 > 0.01:
                 self.logger().debug("Abort creating actions because huge index price diff")
@@ -1067,6 +1084,9 @@ class FundingRateArbitrage(StrategyV2Base):
                     connector_1: price_1,
                     connector_2: price_2,
                 },
+                "interval_1": interval_1,
+                "interval_2": interval_2,
+                "time_to_funding": time_to_funding,
             }
             self.create_action_cool_down = CREATE_ACTION_COOL_DOWN_COUNT
             return [CreateExecutorAction(executor_config=position_executor_config_1),
@@ -1359,9 +1379,20 @@ class FundingRateArbitrage(StrategyV2Base):
         return f"{x:>7.3f}"
     
     def format_time(self, x) -> str:
-        sign = '' if x > 0 else '-'
-        x = abs(x)
-        hours, remainder = divmod(x, 3600)
+        """
+        Format seconds into HH:MM:SS. Tolerates None/invalid inputs to keep logging safe.
+        """
+        if x is None:
+            return "N/A"
+        try:
+            # Allow Decimal/float/int; fall back to string on other types
+            x_num = float(x)
+        except Exception:
+            return str(x)
+
+        sign = '' if x_num >= 0 else '-'
+        x_num = abs(x_num)
+        hours, remainder = divmod(int(x_num), 3600)
         minutes, seconds = divmod(remainder, 60)
         
         return f"{sign}{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
@@ -1513,13 +1544,16 @@ class FundingRateArbitrage(StrategyV2Base):
                                                                                funding_info_report, token, funding_time_check=False)
                 if best_combination:
                     connector_1, connector_2, trade_side, expected_profitability, \
-                        rate_1, rate_2, price_1, price_2, fee_1, fee_2, i_price_diff = best_combination
+                        rate_1, rate_2, price_1, price_2, fee_1, fee_2, i_price_diff, \
+                        interval_1, interval_2, time_to_funding = best_combination
                     best_paths_info["Best Path"] = f"{connector_1}_{connector_2}"
                     best_paths_info["Pirce Diff"] = self.format_percent((price_2 - price_1) / price_1)
                     best_paths_info["Index Diff"] = self.format_percent(i_price_diff / price_1)
                     best_paths_info["Rate Diff"] = self.format_percent((rate_2 - rate_1))
                     best_paths_info["Fees"] = self.format_percent((fee_1 + fee_2))
                     best_paths_info["Trade Profit"] = self.format_percent(expected_profitability)
+                    best_paths_info["Interval 1"] = self.format_time(interval_1)
+                    best_paths_info["Interval 2"] = self.format_time(interval_2)
 
                     time_to_next_funding_info_c1 = funding_info_report[connector_1].next_funding_utc_timestamp - self.current_timestamp
                     time_to_next_funding_info_c2 = funding_info_report[connector_2].next_funding_utc_timestamp - self.current_timestamp
@@ -1616,6 +1650,8 @@ class FundingRateArbitrage(StrategyV2Base):
                     arbitrage_info["Px Diff"] = self.format_percent((price_2 - price_1) / price_1)
                     arbitrage_info["Ix Diff"] = self.format_percent(i_price_diff / price_1)
                     arbitrage_info["Fd Diff"] = self.format_percent(rate_2 - rate_1)
+                    arbitrage_info["Rate 1"] = self.format_percent(rate_1)
+                    arbitrage_info["Rate 2"] = self.format_percent(rate_2)
                     executors = self.get_executors(funding_arbitrage_info["executors_ids"])
                     if len(executors) != 2:
                         continue
@@ -1658,6 +1694,11 @@ class FundingRateArbitrage(StrategyV2Base):
                     hold_time = self.format_time(funding_arbitrage_info['stop_time'] - funding_arbitrage_info['start_time'])
                     arbitrage_info['Hold Time'] = hold_time
                     stop_time = datetime.utcfromtimestamp(funding_arbitrage_info['stop_time']).strftime('%Y-%m-%d %H:%M:%S UTC')
+                    open_time = datetime.utcfromtimestamp(funding_arbitrage_info['start_time']).strftime('%Y-%m-%d %H:%M:%S UTC')
+                    arbitrage_info['Interval 1'] = self.format_time(funding_arbitrage_info['interval_1'])
+                    arbitrage_info['Interval 2'] = self.format_time(funding_arbitrage_info['interval_2'])
+                    arbitrage_info['Time2Funding'] = self.format_time(funding_arbitrage_info['time_to_funding'])
+                    arbitrage_info['Open Time'] = open_time
                     arbitrage_info['Stop Time'] = stop_time
                     arbitrage_info['Ex Closed'] = all_executors_closed
 
@@ -1751,6 +1792,12 @@ class FundingRateArbitrage(StrategyV2Base):
                             telegram_message += f"Px Diff         : {item['Px Diff']}\n"
                             telegram_message += f"Ix Diff         : {item['Ix Diff']}\n"
                             telegram_message += f"Fd Diff         : {item['Fd Diff']}\n"
+                            telegram_message += f"Rate 1          : {item['Rate 1']}\n"
+                            telegram_message += f"Rate 2          : {item['Rate 2']}\n"
+                            telegram_message += f"Interval 1      : {item['Interval 1']}\n"
+                            telegram_message += f"Interval 2      : {item['Interval 2']}\n"
+                            telegram_message += f"Time to Funding : {item['Time2Funding']}\n"
+                            telegram_message += f"Open Time       : {item['Open Time']}\n"
                             telegram_message += f"Open Delay      : {item['Open Delay']}\n"
                             telegram_message += f"Open Sllipage   : {item['Open Sllipage']}\n"
                             telegram_message += f"Close Delay     : {item['Close Delay']}\n"
@@ -1951,7 +1998,7 @@ class FundingRateArbitrage(StrategyV2Base):
                             time_to_funding_2 = t2 - time.time()
                             if time_to_funding_1 / 60 - 60 > self.config.max_time_to_next_funding \
                                 or time_to_funding_2 / 60 - 60> self.config.max_time_to_next_funding:
-                                self.logger().debug(f"[dynamic-topk] Skip {base} ({c1}->{c2}) due to time to funding: {self.format_utc(time_to_funding_1)} - {self.format_utc(time_to_funding_2)}")
+                                self.logger().debug(f"[dynamic-topk] Skip {base} ({c1}->{c2}) due to time to funding: {self.format_time(time_to_funding_1)} - {self.format_time(time_to_funding_2)}")
                                 continue
 
                             # Fees (taker, market, open)
@@ -1975,11 +2022,14 @@ class FundingRateArbitrage(StrategyV2Base):
                             funding_profit = f2.rate - f1.rate
                             trade_profit = price_profit + funding_profit - fee_1 * 2 - fee_2 * 2
 
+                            interval_1 = getattr(f1, "funding_interval", None)
+                            interval_2 = getattr(f2, "funding_interval", None)
+
                             # if funding_profit >= self.config.min_funding_profitability:
                             results.append({
                                 "base": base, "buy": c1, "sell": c2, "p_buy": p1, "p_sell": p2,
                                 "profit": trade_profit, "rates": (f1.rate, f2.rate), "prices": (price_1, price_2),
-                                "fees": (fee_1, fee_2)
+                                "fees": (fee_1, fee_2), "intervals": (interval_1, interval_2)
                             })
                         except Exception as e:
                             self.logger().debug(f"[dynamic-topk] Skip {base} ({c1}->{c2}) due to error: {e}")
@@ -1996,6 +2046,7 @@ class FundingRateArbitrage(StrategyV2Base):
             rates_str = f"({self.format_percent(entry['rates'][0])}, {self.format_percent(entry['rates'][1])})"
             prices_str = f"({entry['prices'][0]:.7f}, {entry['prices'][1]:.7f})"
             fees_str = f"({self.format_percent(entry['fees'][0])}, {self.format_percent(entry['fees'][1])})"
+            intervals_str = f"({self.format_time(entry['intervals'][0])}, {self.format_time(entry['intervals'][1])})"
             self.logger().info(
                 f"[dynamic-topk] Base: {entry['base']} | "
                 f"Buy:{entry['buy']} | "
@@ -2003,7 +2054,8 @@ class FundingRateArbitrage(StrategyV2Base):
                 f"Profit:{profit_str} | "
                 f"Rates:{rates_str} | "
                 f"Prices:{prices_str} | "
-                f"Fees:{fees_str}"
+                f"Fees:{fees_str} | "
+                f"Intervals:{intervals_str} | "
             )
         bases = [r["base"] for r in topk]
         self._dynamic_topk_tokens = set(bases)
