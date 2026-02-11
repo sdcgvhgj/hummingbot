@@ -370,6 +370,12 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Force-close positions after holding this many minutes (e.g. 120): ",
             "prompt_on_new": True}
     )
+    price_type_arbitrage_enabled: bool = Field(
+        default=True,
+        json_schema_extra={
+            "prompt": lambda mi: "Enable arbitrages that targets price diff only? (true/false): ",
+            "prompt_on_new": True}
+    )
     # Dynamic Top-K scanning controls
     dynamic_topk_enabled: bool = Field(
         default=False,
@@ -472,6 +478,10 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
 
 
 class FundingRateArbitrage(StrategyV2Base):
+    ARB_TYPE_FUNDING = "FUNDING"
+    ARB_TYPE_PRICE = "PRICE"
+    PRICE_ARB_MAX_FUNDING_INTERVAL_SECONDS = 8 * 60 * 60
+
     quote_markets_map = {
         "hyperliquid_perpetual": "USD",
         "binance_perpetual": "USDT"
@@ -654,15 +664,9 @@ class FundingRateArbitrage(StrategyV2Base):
 
     def get_most_trade_profitable_combination(self, prices_and_fees_cache: Dict, funding_info_report: Dict, token: str,
                                                 funding_time_check: bool = True):
-        # Remove connectors that are far away from funding time
-        valid_connectors = []
-        for connector in funding_info_report:
-            time_to_funding = funding_info_report[connector].next_funding_utc_timestamp - self.current_timestamp
-            if time_to_funding / 60 < self.config.max_time_to_next_funding and time_to_funding / 60 > self.config.min_time_to_next_funding:
-                valid_connectors.append(connector)
-
-        if not funding_time_check:
-            valid_connectors = list(funding_info_report.keys())
+        # Price-type arbitrage may intentionally ignore the time-to-funding entry window,
+        # so we evaluate all connectors pairwise and gate by arbitrage type later.
+        valid_connectors = list(funding_info_report.keys())
 
         # TODO: computation delay mesure
 
@@ -701,12 +705,19 @@ class FundingRateArbitrage(StrategyV2Base):
                     interval_2 = getattr(funding_info_report[connector_2], "funding_interval", None) \
                         or self.funding_payment_interval_map.get(connector_2)
                     time_to_funding = time_to_funding_1 or time_to_funding_2
+                    arbitrage_type = self._classify_arbitrage_type(
+                        funding_rate_profit, time_to_funding_1, time_to_funding_2, interval_1, interval_2
+                    )
+                    if funding_time_check and arbitrage_type == self.ARB_TYPE_FUNDING:
+                        if not self._is_in_funding_entry_window(time_to_funding_1) \
+                                or not self._is_in_funding_entry_window(time_to_funding_2):
+                            continue
                     if float(trade_profit) > float(highest_profitability):
                         trade_side = TradeType.BUY
                         highest_profitability = trade_profit
                         best_combination = (connector_1, connector_2, trade_side, trade_profit, \
                                             rate_1, rate_2, price_1, price_2, fee_1, fee_2, i_price_diff, \
-                                            interval_1, interval_2, time_to_funding)
+                                            interval_1, interval_2, time_to_funding, arbitrage_type)
         return best_combination
 
     def _ema_key(self, connector_name: str, trading_pair: str) -> str:
@@ -726,14 +737,9 @@ class FundingRateArbitrage(StrategyV2Base):
 
     def get_best_combination_by_heuristic(self, prices_and_fees_cache: Dict, funding_info_report: Dict, token: str,
                                             funding_time_check: bool = True):
-        valid_connectors = []
-        for connector in funding_info_report:
-            time_to_funding = funding_info_report[connector].next_funding_utc_timestamp - self.current_timestamp
-            if time_to_funding / 60 < self.config.max_time_to_next_funding and time_to_funding / 60 > self.config.min_time_to_next_funding:
-                valid_connectors.append(connector)
-
-        if not funding_time_check:
-            valid_connectors = list(funding_info_report.keys())
+        # Same as get_most_trade_profitable_combination: keep all pairs, then apply
+        # funding-window rules only to funding-type arbitrage.
+        valid_connectors = list(funding_info_report.keys())
 
         best_score = None
         best = None
@@ -770,11 +776,18 @@ class FundingRateArbitrage(StrategyV2Base):
                 interval_2 = getattr(funding_info_report[connector_2], "funding_interval", None) \
                     or self.funding_payment_interval_map.get(connector_2)
                 time_to_funding = t1 or t2
+                arbitrage_type = self._classify_arbitrage_type(
+                    funding_rate_profit, t1, t2, interval_1, interval_2
+                )
+                if funding_time_check and arbitrage_type == self.ARB_TYPE_FUNDING:
+                    if not self._is_in_funding_entry_window(t1) or not self._is_in_funding_entry_window(t2):
+                        continue
 
                 if best_score is None or float(score) > float(best_score):
                     best_score = score
                     best = (connector_1, connector_2, TradeType.BUY, trade_profit, rate_1, rate_2, \
-                            price_1, price_2, fee_1, fee_2, i_price_diff, interval_1, interval_2, time_to_funding)
+                            price_1, price_2, fee_1, fee_2, i_price_diff, interval_1, interval_2, time_to_funding,
+                            arbitrage_type)
 
         return best_score, best
     
@@ -789,6 +802,59 @@ class FundingRateArbitrage(StrategyV2Base):
         funding_rate_profit = rate_2 - rate_1
         profit_rate = (price_profit + funding_rate_profit - fee_1 * 2 - fee_2 * 2) / time_to_funding
         return profit_rate
+
+    def _is_in_funding_entry_window(self, time_to_funding_seconds) -> bool:
+        try:
+            minutes = Decimal(str(time_to_funding_seconds)) / Decimal("60")
+            return minutes < self.config.max_time_to_next_funding and minutes > self.config.min_time_to_next_funding
+        except Exception:
+            return False
+
+    def _is_price_arbitrage_opportunity(self, funding_rate_diff, time_to_funding_1, time_to_funding_2, interval_1, interval_2) -> bool:
+        if not bool(getattr(self.config, "price_type_arbitrage_enabled", False)):
+            return False
+        try:
+            min_funding = Decimal(str(getattr(self.config, "min_funding_profitability", Decimal("0"))))
+        except Exception:
+            min_funding = Decimal("0")
+        if min_funding <= Decimal("0"):
+            return False
+        try:
+            rate_diff = Decimal(str(funding_rate_diff))
+        except Exception:
+            return False
+        # Price-type arbitrage: positive but smaller-than-threshold funding edge.
+        if rate_diff <= Decimal("0") or rate_diff >= min_funding:
+            return False
+        try:
+            i1 = int(interval_1)
+            i2 = int(interval_2)
+            if i1 <= 0 or i2 <= 0:
+                return False
+            if i1 >= self.PRICE_ARB_MAX_FUNDING_INTERVAL_SECONDS - 60 \
+                    or i2 >= self.PRICE_ARB_MAX_FUNDING_INTERVAL_SECONDS - 60:
+                return False
+        except Exception:
+            return False
+        try:
+            t1 = float(time_to_funding_1)
+            t2 = float(time_to_funding_2)
+            # Must settle at the same funding timestamp.
+            if abs(t1 - t2) > 60:
+                return False
+            # Must be in the first half of current funding cycle.
+            if t1 <= i1 / 2 or t2 <= i2 / 2:
+                return False
+        except Exception:
+            return False
+        return True
+
+    def _classify_arbitrage_type(self, funding_rate_diff, time_to_funding_1, time_to_funding_2, interval_1, interval_2) -> str:
+        if self._is_price_arbitrage_opportunity(
+            funding_rate_diff, time_to_funding_1, time_to_funding_2, interval_1, interval_2
+        ):
+            return self.ARB_TYPE_PRICE
+        return self.ARB_TYPE_FUNDING
 
     def _funding_intervals_match(self, funding_info_report: Dict, connector_1: str, connector_2: str) -> bool:
         policy = str(getattr(self.config, "funding_interval_policy", "strict")).lower()
@@ -976,7 +1042,7 @@ class FundingRateArbitrage(StrategyV2Base):
         for token, _, best_combination in token_rankings:
             connector_1, connector_2, trade_side, expected_profitability, \
                 rate_1, rate_2, price_1, price_2, fee_1, fee_2, i_price_diff, \
-                interval_1, interval_2, time_to_funding = best_combination
+                interval_1, interval_2, time_to_funding, arbitrage_type = best_combination
 
             cap_1 = self._get_funding_cap_abs(connector_1)
             cap_2 = self._get_funding_cap_abs(connector_2)
@@ -992,9 +1058,20 @@ class FundingRateArbitrage(StrategyV2Base):
                     f">= cap {self.format_percent(cap_2)}")
                 continue
 
-            open_condition = expected_profitability >= self.config.min_trade_profitability \
-                and rate_2 - rate_1 >= self.config.min_funding_profitability \
-                and (price_2 - price_1 - i_price_diff) / price_1 >= self.config.min_price_diff
+            funding_rate_diff = rate_2 - rate_1
+            price_profitability = (price_2 - price_1 - i_price_diff) / price_1
+            is_funding_type = arbitrage_type == self.ARB_TYPE_FUNDING
+            is_price_type = arbitrage_type == self.ARB_TYPE_PRICE
+
+            if is_funding_type:
+                open_condition = expected_profitability >= self.config.min_trade_profitability \
+                    and funding_rate_diff >= self.config.min_funding_profitability \
+                    and price_profitability >= self.config.min_price_diff
+            else:
+                open_condition = expected_profitability >= self.config.min_trade_profitability \
+                    and price_profitability >= self.config.min_price_diff \
+                    and funding_rate_diff > 0 \
+                    and funding_rate_diff < self.config.min_funding_profitability
             
             if not open_condition:
                 continue
@@ -1049,6 +1126,7 @@ class FundingRateArbitrage(StrategyV2Base):
 
             self.logger().info(
                 f"Best Combination: {token} | {connector_1} | {connector_2} | {trade_side} | "
+                    f"arb_type={arbitrage_type} | "
                     f"rate_1={self.format_percent(rate_1)} | rate_2={self.format_percent(rate_2)} | "
                     f"price_1={price_1:.7f} | price_2={price_2:.7f} | "
                     f"i_price_diff={i_price_diff:.7f} | "
@@ -1087,6 +1165,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 "interval_1": interval_1,
                 "interval_2": interval_2,
                 "time_to_funding": time_to_funding,
+                "arbitrage_type": arbitrage_type,
             }
             self.create_action_cool_down = CREATE_ACTION_COOL_DOWN_COUNT
             return [CreateExecutorAction(executor_config=position_executor_config_1),
@@ -1214,7 +1293,10 @@ class FundingRateArbitrage(StrategyV2Base):
                 max_hold_seconds = int(getattr(self.config, "max_hold_time_minutes", 0)) * 60
             except Exception:
                 max_hold_seconds = 0
-            if max_hold_seconds > 0 and self.current_timestamp - funding_arbitrage_info.get("start_time", 0) >= max_hold_seconds:
+            arbitrage_type = funding_arbitrage_info.get("arbitrage_type", self.ARB_TYPE_FUNDING)
+            is_price_type_arb = arbitrage_type == self.ARB_TYPE_PRICE
+            if (not is_price_type_arb) and max_hold_seconds > 0 and \
+                    self.current_timestamp - funding_arbitrage_info.get("start_time", 0) >= max_hold_seconds:
                 self.logger().info(f"Max hold time reached for {token}, stopping executors")
                 stopped_tokens.append(token)
                 funding_arbitrage_info['stop_reason'] = "TIME"
@@ -1287,6 +1369,7 @@ class FundingRateArbitrage(StrategyV2Base):
             # TODO strengthen stop_loss_condition
             stop_loss_condition = False
             stop_loss_type = None
+            abnormal_price_arb_condition = False
             if len(funding_arbitrage_info["funding_payments"]) >= 2:
                 rate_diff = rate_2 - rate_1
                 price_diff = (c_price_2 - c_price_1 - i_price_diff) / c_price_1
@@ -1300,14 +1383,18 @@ class FundingRateArbitrage(StrategyV2Base):
                 elif price_diff < self.config.min_price_diff and rate_diff < self.config.min_funding_profitability:
                     stop_loss_condition = True
                     stop_loss_type = "3"
+            if is_price_type_arb and len(funding_arbitrage_info["funding_payments"]) >= 2 and not take_profit_condition:
+                # Price-type arbitrage must realize funding edge on first settlement cycle.
+                # If not, close proactively as an abnormal case.
+                abnormal_price_arb_condition = True
 
-            stop_condition_now = take_profit_condition or stop_loss_condition
-            if stop_condition_now and not self.good_time_to_trade():
+            stop_condition_now = take_profit_condition or stop_loss_condition or abnormal_price_arb_condition
+            if stop_condition_now and not abnormal_price_arb_condition and not self.good_time_to_trade():
                 self.logger().debug(f"[good_time_to_trade] Not good time to trade, skipping stop of executors for {token}")
                 continue
 
             # 连续确认：若满足任一止盈/止损条件，则记录本秒命中并检查是否连续N秒
-            if stop_condition_now:
+            if stop_condition_now and not abnormal_price_arb_condition:
                 now_sec = int(self.current_timestamp)
                 self._note_stop_condition_hit(token, now_sec)
                 if not self._has_recent_consecutive_stop_hits(token, now_sec):
@@ -1321,6 +1408,14 @@ class FundingRateArbitrage(StrategyV2Base):
                                    f"{funding_payments_pnl_pct=:.4%}")
                 stopped_tokens.append(token)
                 funding_arbitrage_info['stop_reason'] = "TP"
+                funding_arbitrage_info['stop_time'] = self.current_timestamp
+                self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
+                stop_executor_actions.extend(self.create_stop_executor_action(executors, c_price_1, c_price_2))
+            elif abnormal_price_arb_condition:
+                self.logger().warning(
+                    f"Price-type arbitrage failed to realize profit after settlement for {token}, stopping executors")
+                stopped_tokens.append(token)
+                funding_arbitrage_info['stop_reason'] = "SL-PRICE"
                 funding_arbitrage_info['stop_time'] = self.current_timestamp
                 self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
                 stop_executor_actions.extend(self.create_stop_executor_action(executors, c_price_1, c_price_2))
@@ -1545,8 +1640,9 @@ class FundingRateArbitrage(StrategyV2Base):
                 if best_combination:
                     connector_1, connector_2, trade_side, expected_profitability, \
                         rate_1, rate_2, price_1, price_2, fee_1, fee_2, i_price_diff, \
-                        interval_1, interval_2, time_to_funding = best_combination
+                        interval_1, interval_2, time_to_funding, arbitrage_type = best_combination
                     best_paths_info["Best Path"] = f"{connector_1}_{connector_2}"
+                    best_paths_info["Arb Type"] = arbitrage_type
                     best_paths_info["Pirce Diff"] = self.format_percent((price_2 - price_1) / price_1)
                     best_paths_info["Index Diff"] = self.format_percent(i_price_diff / price_1)
                     best_paths_info["Rate Diff"] = self.format_percent((rate_2 - rate_1))
@@ -1574,6 +1670,7 @@ class FundingRateArbitrage(StrategyV2Base):
             active_arbitrage_debug = []
             for token, funding_arbitrage_info in self.active_funding_arbitrages.items():
                 arbitrage_info = { "Token": token }
+                arbitrage_info["Arb Type"] = funding_arbitrage_info.get("arbitrage_type", self.ARB_TYPE_FUNDING)
                 arbitrage_info["Connector 1"] = funding_arbitrage_info["connector_1"]
                 arbitrage_info["Connector 2"] = funding_arbitrage_info["connector_2"]
                 funding_payments_pnl = \
@@ -1643,6 +1740,7 @@ class FundingRateArbitrage(StrategyV2Base):
                     connector_2 = funding_arbitrage_info["connector_2"]
                     arbitrage_info['Conn 1'] = connector_1.replace('_perpetual', '')
                     arbitrage_info['Conn 2'] = connector_2.replace('_perpetual', '')
+                    arbitrage_info['Arb Type'] = funding_arbitrage_info.get("arbitrage_type", self.ARB_TYPE_FUNDING)
                     price_1, price_2 = funding_arbitrage_info["price_1"], funding_arbitrage_info["price_2"]
                     rate_1, rate_2 = funding_arbitrage_info["rate_1"], funding_arbitrage_info["rate_2"]
                     fee_1, fee_2 = funding_arbitrage_info["fee_1"], funding_arbitrage_info["fee_2"]
@@ -1789,6 +1887,7 @@ class FundingRateArbitrage(StrategyV2Base):
                             telegram_message += f"Token           : {item['Token']}\n"
                             telegram_message += f"Conn 1          : {item['Conn 1']}\n"
                             telegram_message += f"Conn 2          : {item['Conn 2']}\n"
+                            telegram_message += f"Arb Type        : {item['Arb Type']}\n"
                             telegram_message += f"Px Diff         : {item['Px Diff']}\n"
                             telegram_message += f"Ix Diff         : {item['Ix Diff']}\n"
                             telegram_message += f"Fd Diff         : {item['Fd Diff']}\n"
@@ -1817,6 +1916,7 @@ class FundingRateArbitrage(StrategyV2Base):
                             telegram_message += "```\n"
                             for active_arbitrage_info in self.status_active_arbitrage_info:
                                 telegram_message += f"Hold Time : {active_arbitrage_info['Hold Time']} | "
+                                telegram_message += f"Type : {active_arbitrage_info['Arb Type']} | "
                                 telegram_message += f"Token : {active_arbitrage_info['Token']}\n"
                             telegram_message += "```\n"
                         balances_info = self.get_balances_info()
@@ -1971,10 +2071,10 @@ class FundingRateArbitrage(StrategyV2Base):
                                 self.logger().debug(f"[dynamic-topk] Skip {base} ({c1}->{c2}) due to time difference: {self.format_utc(t1)} - {self.format_utc(t2)}")
                                 continue
 
+                            interval_1 = getattr(f1, "funding_interval", None) or self.funding_payment_interval_map.get(c1)
+                            interval_2 = getattr(f2, "funding_interval", None) or self.funding_payment_interval_map.get(c2)
                             policy = str(getattr(self.config, "funding_interval_policy", "strict")).lower()
                             if policy != "off":
-                                interval_1 = getattr(f1, "funding_interval", None) or self.funding_payment_interval_map.get(c1)
-                                interval_2 = getattr(f2, "funding_interval", None) or self.funding_payment_interval_map.get(c2)
                                 try:
                                     i1 = int(interval_1) if interval_1 is not None else None
                                     i2 = int(interval_2) if interval_2 is not None else None
@@ -1996,8 +2096,14 @@ class FundingRateArbitrage(StrategyV2Base):
 
                             time_to_funding_1 = t1 - time.time()
                             time_to_funding_2 = t2 - time.time()
-                            if time_to_funding_1 / 60 - 60 > self.config.max_time_to_next_funding \
-                                or time_to_funding_2 / 60 - 60> self.config.max_time_to_next_funding:
+                            funding_rate_diff = f2.rate - f1.rate
+                            arb_type = self._classify_arbitrage_type(
+                                funding_rate_diff, time_to_funding_1, time_to_funding_2, interval_1, interval_2
+                            )
+                            if arb_type == self.ARB_TYPE_FUNDING and (
+                                not self._is_in_funding_entry_window(time_to_funding_1)
+                                or not self._is_in_funding_entry_window(time_to_funding_2)
+                            ):
                                 self.logger().debug(f"[dynamic-topk] Skip {base} ({c1}->{c2}) due to time to funding: {self.format_time(time_to_funding_1)} - {self.format_time(time_to_funding_2)}")
                                 continue
 
@@ -2019,17 +2125,14 @@ class FundingRateArbitrage(StrategyV2Base):
 
                             # Direction: BUY on c1, SELL on c2
                             price_profit = (price_2 - price_1 - i_price_diff) / price_1
-                            funding_profit = f2.rate - f1.rate
+                            funding_profit = funding_rate_diff
                             trade_profit = price_profit + funding_profit - fee_1 * 2 - fee_2 * 2
-
-                            interval_1 = getattr(f1, "funding_interval", None)
-                            interval_2 = getattr(f2, "funding_interval", None)
 
                             # if funding_profit >= self.config.min_funding_profitability:
                             results.append({
                                 "base": base, "buy": c1, "sell": c2, "p_buy": p1, "p_sell": p2,
                                 "profit": trade_profit, "rates": (f1.rate, f2.rate), "prices": (price_1, price_2),
-                                "fees": (fee_1, fee_2), "intervals": (interval_1, interval_2)
+                                "fees": (fee_1, fee_2), "intervals": (interval_1, interval_2), "arb_type": arb_type
                             })
                         except Exception as e:
                             self.logger().debug(f"[dynamic-topk] Skip {base} ({c1}->{c2}) due to error: {e}")
@@ -2049,6 +2152,7 @@ class FundingRateArbitrage(StrategyV2Base):
             intervals_str = f"({self.format_time(entry['intervals'][0])}, {self.format_time(entry['intervals'][1])})"
             self.logger().info(
                 f"[dynamic-topk] Base: {entry['base']} | "
+                f"Type:{entry.get('arb_type', self.ARB_TYPE_FUNDING)} | "
                 f"Buy:{entry['buy']} | "
                 f"Sell:{entry['sell']} | "
                 f"Profit:{profit_str} | "
