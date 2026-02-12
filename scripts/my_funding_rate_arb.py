@@ -329,6 +329,12 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Enter the min price diff to enter in a position (e.g. 0.001): ",
             "prompt_on_new": True}
     )
+    max_index_price_diff_pct: Decimal = Field(
+        default=0.01,
+        json_schema_extra={
+            "prompt": lambda mi: "Abort opening when index price diff pct is above this threshold (e.g. 0.01): ",
+            "prompt_on_new": True}
+    )
     min_take_profit: Decimal = Field(
         default=0.001,
         json_schema_extra={
@@ -1137,7 +1143,7 @@ class FundingRateArbitrage(StrategyV2Base):
                     f"interval_1={self.format_time(interval_1)} | interval_2={self.format_time(interval_2)} | "
                     f"time_to_funding={self.format_time(time_to_funding)}")
 
-            if i_price_diff / price_1 > 0.01:
+            if i_price_diff / price_1 > float(self.config.max_index_price_diff_pct):
                 self.logger().debug("Abort creating actions because huge index price diff")
                 continue
 
