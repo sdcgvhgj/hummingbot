@@ -1376,7 +1376,7 @@ class FundingRateArbitrage(StrategyV2Base):
             stop_loss_condition = False
             stop_loss_type = None
             abnormal_price_arb_condition = False
-            if len(funding_arbitrage_info["funding_payments"]) >= 2:
+            if (not is_price_type_arb) and len(funding_arbitrage_info["funding_payments"]) >= 2 and not take_profit_condition:
                 rate_diff = rate_2 - rate_1
                 price_diff = (c_price_2 - c_price_1 - i_price_diff) / c_price_1
                 profitability = rate_diff + price_diff - fee_1 - fee_2
@@ -1390,9 +1390,11 @@ class FundingRateArbitrage(StrategyV2Base):
                     stop_loss_condition = True
                     stop_loss_type = "3"
             if is_price_type_arb and len(funding_arbitrage_info["funding_payments"]) >= 2 and not take_profit_condition:
-                # Price-type arbitrage must realize funding edge on first settlement cycle.
-                # If not, close proactively as an abnormal case.
-                abnormal_price_arb_condition = True
+                current_holding_seconds = self.current_timestamp - funding_arbitrage_info.get("start_time", 0)
+                interval = funding_arbitrage_info.get("interval_1", None) or funding_arbitrage_info.get("interval_2", None)
+                if interval is not None and current_holding_seconds > 2 * interval:
+                    abnormal_price_arb_condition = True
+                    self.logger().warning(f"Price-type arbitrage holding time exceeded {interval} seconds, stopping executors")
 
             stop_condition_now = take_profit_condition or stop_loss_condition or abnormal_price_arb_condition
             if stop_condition_now and not abnormal_price_arb_condition and not self.good_time_to_trade():
@@ -1421,7 +1423,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 self.logger().warning(
                     f"Price-type arbitrage failed to realize profit after settlement for {token}, stopping executors")
                 stopped_tokens.append(token)
-                funding_arbitrage_info['stop_reason'] = "SL-PRICE"
+                funding_arbitrage_info['stop_reason'] = "SL-PRICE-TIME"
                 funding_arbitrage_info['stop_time'] = self.current_timestamp
                 self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
                 stop_executor_actions.extend(self.create_stop_executor_action(executors, c_price_1, c_price_2))
