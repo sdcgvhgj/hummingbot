@@ -648,17 +648,18 @@ class FundingRateArbitrage(StrategyV2Base):
         return max(impact_value, self.config.position_size_quote)
 
     def get_price_and_fee_with_cache(self, prices_and_fees_cache: Dict, connector_name, token: str, side: TradeType):
-        if connector_name in prices_and_fees_cache:
-            return prices_and_fees_cache[connector_name]
-
         trading_pair = self.get_trading_pair_for_connector(token, connector_name)
+        cache_key = (connector_name, trading_pair, side)
+        if cache_key in prices_and_fees_cache:
+            return prices_and_fees_cache[cache_key]
+
         raw_price = Decimal(self.market_data_provider.get_price_for_quote_volume(
             connector_name=connector_name,
             trading_pair=trading_pair,
             quote_volume=self.config.position_size_quote,
             is_buy=side == TradeType.BUY,
         ).result_price)
-        price = self._ema_update_and_get(connector_name, trading_pair, raw_price)
+        price = self._ema_update_and_get(connector_name, trading_pair, side, raw_price)
 
         imn_price = Decimal(self.market_data_provider.get_price_for_quote_volume(
             connector_name=connector_name,
@@ -667,20 +668,21 @@ class FundingRateArbitrage(StrategyV2Base):
             is_buy=side == TradeType.BUY,
         ).result_price)
 
-        if connector_name not in self._fee_cache:
-            self._fee_cache[connector_name] = self.connectors[connector_name].get_fee(
+        fee_cache_key = (connector_name, side)
+        if fee_cache_key not in self._fee_cache:
+            self._fee_cache[fee_cache_key] = self.connectors[connector_name].get_fee(
                 base_currency=trading_pair.split("-")[0],
                 quote_currency=trading_pair.split("-")[1],
                 order_type=OrderType.MARKET,
-                order_side=TradeType.BUY,
+                order_side=side,
                 amount=self.config.position_size_quote / price,
                 price=price,
                 is_maker=False,
                 position_action=PositionAction.OPEN
             ).percent
 
-        fee = self._fee_cache[connector_name]
-        prices_and_fees_cache[connector_name] = (price, imn_price, fee)
+        fee = self._fee_cache[fee_cache_key]
+        prices_and_fees_cache[cache_key] = (price, imn_price, fee)
         return (price, imn_price, fee)
 
     def get_most_trade_profitable_combination(self, prices_and_fees_cache: Dict, funding_info_report: Dict, token: str,
@@ -742,13 +744,13 @@ class FundingRateArbitrage(StrategyV2Base):
                                             imn_price_1, imn_price_2)
         return best_combination
 
-    def _ema_key(self, connector_name: str, trading_pair: str) -> str:
-        return f"{connector_name}|{trading_pair}"
+    def _ema_key(self, connector_name: str, trading_pair: str, side: TradeType) -> str:
+        return f"{connector_name}|{trading_pair}|{side.name}"
 
-    def _ema_update_and_get(self, connector_name: str, trading_pair: str, new_price: Decimal) -> Decimal:
+    def _ema_update_and_get(self, connector_name: str, trading_pair: str, side: TradeType, new_price: Decimal) -> Decimal:
         if self._ema_alpha == Decimal(1):
             return new_price
-        key = self._ema_key(connector_name, trading_pair)
+        key = self._ema_key(connector_name, trading_pair, side)
         old = self._ema_prices.get(key)
         if old is None:
             ema = new_price
