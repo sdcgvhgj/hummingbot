@@ -505,6 +505,10 @@ class FundingRateArbitrage(StrategyV2Base):
         "okx_perpetual": 60 * 60 * 8,
         "bybit_perpetual": 60 * 60 * 8,
     }
+    quote_impact_value_map = {
+        "okx_perpetual": 200 * 10, # 200 × Max leverage allowed for this perpetual
+        "bybit_perpetual": 3750, # information not retrievable by API
+    }
     position_mode_map = {
         "hyperliquid_perpetual": PositionMode.ONEWAY,
         "okx_perpetual" : PositionMode.HEDGE,
@@ -639,6 +643,10 @@ class FundingRateArbitrage(StrategyV2Base):
                 self.logger().warning(f"Failed to get funding info for {trading_pair} on {connector_name}: {e}")
         return funding_rates
 
+    def get_quote_volume_for_connector(self, connector_name: str, trading_pair: str) -> Decimal:
+        impact_value = self.quote_impact_value_map.get(connector_name, Decimal(0))
+        return max(impact_value, self.config.position_size_quote)
+
     def get_price_and_fee_with_cache(self, prices_and_fees_cache: Dict, connector_name, token: str, side: TradeType):
         if connector_name in prices_and_fees_cache:
             return prices_and_fees_cache[connector_name]
@@ -651,6 +659,13 @@ class FundingRateArbitrage(StrategyV2Base):
             is_buy=side == TradeType.BUY,
         ).result_price)
         price = self._ema_update_and_get(connector_name, trading_pair, raw_price)
+
+        imn_price = Decimal(self.market_data_provider.get_price_for_quote_volume(
+            connector_name=connector_name,
+            trading_pair=trading_pair,
+            quote_volume=self.get_quote_volume_for_connector(connector_name, trading_pair),
+            is_buy=side == TradeType.BUY,
+        ).result_price)
 
         if connector_name not in self._fee_cache:
             self._fee_cache[connector_name] = self.connectors[connector_name].get_fee(
@@ -665,8 +680,8 @@ class FundingRateArbitrage(StrategyV2Base):
             ).percent
 
         fee = self._fee_cache[connector_name]
-        prices_and_fees_cache[connector_name] = (price, fee)
-        return (price, fee)
+        prices_and_fees_cache[connector_name] = (price, imn_price, fee)
+        return (price, imn_price, fee)
 
     def get_most_trade_profitable_combination(self, prices_and_fees_cache: Dict, funding_info_report: Dict, token: str,
                                                 funding_time_check: bool = True):
@@ -688,8 +703,8 @@ class FundingRateArbitrage(StrategyV2Base):
                         continue
                     if not self._funding_intervals_match(funding_info_report, connector_1, connector_2):
                         continue
-                    price_1, fee_1 = self.get_price_and_fee_with_cache(prices_and_fees_cache, connector_1, token, TradeType.BUY)
-                    price_2, fee_2 = self.get_price_and_fee_with_cache(prices_and_fees_cache, connector_2, token, TradeType.SELL)
+                    price_1, imn_price_1, fee_1 = self.get_price_and_fee_with_cache(prices_and_fees_cache, connector_1, token, TradeType.BUY)
+                    price_2, imn_price_2, fee_2 = self.get_price_and_fee_with_cache(prices_and_fees_cache, connector_2, token, TradeType.SELL)
                     rate_1 = funding_info_report[connector_1].rate
                     rate_2 = funding_info_report[connector_2].rate
                     # p2 = 1.1 p1
@@ -702,7 +717,7 @@ class FundingRateArbitrage(StrategyV2Base):
                     i_price_1 = funding_info_report[connector_1].index_price
                     i_price_2 = funding_info_report[connector_2].index_price
                     i_price_diff = max(0, i_price_2 - i_price_1)
-                    price_profit = (price_2 - price_1 - i_price_diff) / price_1
+                    price_profit = (imn_price_2 - imn_price_1 - i_price_diff) / price_1
                     funding_rate_profit = rate_2 - rate_1
                     trade_profit = price_profit + funding_rate_profit - fee_1 * 2 - fee_2 * 2
                     # Prefer live interval, fall back to static map when missing
@@ -723,7 +738,8 @@ class FundingRateArbitrage(StrategyV2Base):
                         highest_profitability = trade_profit
                         best_combination = (connector_1, connector_2, trade_side, trade_profit, \
                                             rate_1, rate_2, price_1, price_2, fee_1, fee_2, i_price_diff, \
-                                            interval_1, interval_2, time_to_funding, arbitrage_type)
+                                            interval_1, interval_2, time_to_funding, arbitrage_type, \
+                                            imn_price_1, imn_price_2)
         return best_combination
 
     def _ema_key(self, connector_name: str, trading_pair: str) -> str:
@@ -759,8 +775,8 @@ class FundingRateArbitrage(StrategyV2Base):
                     continue
                 if not self._funding_intervals_match(funding_info_report, connector_1, connector_2):
                     continue
-                price_1, fee_1 = self.get_price_and_fee_with_cache(prices_and_fees_cache, connector_1, token, TradeType.BUY)
-                price_2, fee_2 = self.get_price_and_fee_with_cache(prices_and_fees_cache, connector_2, token, TradeType.SELL)
+                price_1, imn_price_1, fee_1 = self.get_price_and_fee_with_cache(prices_and_fees_cache, connector_1, token, TradeType.BUY)
+                price_2, imn_price_2, fee_2 = self.get_price_and_fee_with_cache(prices_and_fees_cache, connector_2, token, TradeType.SELL)
                 rate_1 = funding_info_report[connector_1].rate
                 rate_2 = funding_info_report[connector_2].rate
 
@@ -773,7 +789,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 score = self.heuristic_profitability_evaluation(price_1, price_2, fee_1, fee_2, rate_1, rate_2, time_to_funding, i_price_diff)
 
                 # 交易期望收益（用于后续阈值判断）
-                price_profit = (price_2 - price_1 - i_price_diff) / price_1
+                price_profit = (imn_price_2 - imn_price_1 - i_price_diff) / price_1
                 funding_rate_profit = rate_2 - rate_1
                 trade_profit = price_profit + funding_rate_profit - fee_1 * 2 - fee_2 * 2
 
@@ -793,7 +809,7 @@ class FundingRateArbitrage(StrategyV2Base):
                     best_score = score
                     best = (connector_1, connector_2, TradeType.BUY, trade_profit, rate_1, rate_2, \
                             price_1, price_2, fee_1, fee_2, i_price_diff, interval_1, interval_2, time_to_funding,
-                            arbitrage_type)
+                            arbitrage_type, imn_price_1, imn_price_2)
 
         return best_score, best
     
@@ -1048,7 +1064,7 @@ class FundingRateArbitrage(StrategyV2Base):
         for token, _, best_combination in token_rankings:
             connector_1, connector_2, trade_side, expected_profitability, \
                 rate_1, rate_2, price_1, price_2, fee_1, fee_2, i_price_diff, \
-                interval_1, interval_2, time_to_funding, arbitrage_type = best_combination
+                interval_1, interval_2, time_to_funding, arbitrage_type, imn_price_1, imn_price_2 = best_combination
 
             cap_1 = self._get_funding_cap_abs(connector_1)
             cap_2 = self._get_funding_cap_abs(connector_2)
@@ -1065,7 +1081,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 continue
 
             funding_rate_diff = rate_2 - rate_1
-            price_profitability = (price_2 - price_1 - i_price_diff) / price_1
+            price_profitability = (imn_price_2 - imn_price_1 - i_price_diff) / price_1
             is_funding_type = arbitrage_type == self.ARB_TYPE_FUNDING
             is_price_type = arbitrage_type == self.ARB_TYPE_PRICE
 
@@ -1135,6 +1151,7 @@ class FundingRateArbitrage(StrategyV2Base):
                     f"arb_type={arbitrage_type} | "
                     f"rate_1={self.format_percent(rate_1)} | rate_2={self.format_percent(rate_2)} | "
                     f"price_1={price_1:.7f} | price_2={price_2:.7f} | "
+                    f"imn_price_1={imn_price_1:.7f} | imn_price_2={imn_price_2:.7f} | "
                     f"i_price_diff={i_price_diff:.7f} | "
                     f"i_price_diff_pct={self.format_percent(i_price_diff/price_1)} | "
                     f"fee_1={self.format_percent(fee_1)} | fee_2={self.format_percent(fee_2)} | "
@@ -1156,6 +1173,8 @@ class FundingRateArbitrage(StrategyV2Base):
                 "rate_2": rate_2,
                 "price_1": price_1,
                 "price_2": price_2,
+                "imn_price_1": imn_price_1,
+                "imn_price_2": imn_price_2,
                 "i_price_diff": i_price_diff,
                 "fee_1": fee_1,
                 "fee_2": fee_2,
@@ -1267,9 +1286,9 @@ class FundingRateArbitrage(StrategyV2Base):
             executors = self.get_executors(funding_arbitrage_info["executors_ids"])
             connector_1 = funding_arbitrage_info["connector_1"]
             connector_2 = funding_arbitrage_info["connector_2"]
-            c_price_1, _ = self.get_price_and_fee_with_cache( \
+            c_price_1, _, __ = self.get_price_and_fee_with_cache( \
                 {}, connector_1, token, TradeType.SELL)
-            c_price_2, _ = self.get_price_and_fee_with_cache( \
+            c_price_2, _, __ = self.get_price_and_fee_with_cache( \
                 {}, connector_2, token, TradeType.BUY)
             closed_ex = list(ex.close_type for ex in executors if ex.close_type)
             if len(closed_ex) > 0:
@@ -1648,10 +1667,12 @@ class FundingRateArbitrage(StrategyV2Base):
                 if best_combination:
                     connector_1, connector_2, trade_side, expected_profitability, \
                         rate_1, rate_2, price_1, price_2, fee_1, fee_2, i_price_diff, \
-                        interval_1, interval_2, time_to_funding, arbitrage_type = best_combination
+                        interval_1, interval_2, time_to_funding, arbitrage_type, \
+                        imn_price_1, imn_price_2 = best_combination
                     best_paths_info["Best Path"] = f"{connector_1}_{connector_2}"
                     best_paths_info["Arb Type"] = arbitrage_type
                     best_paths_info["Pirce Diff"] = self.format_percent((price_2 - price_1) / price_1)
+                    best_paths_info["IMN Pirce Diff"] = self.format_percent((imn_price_2 - imn_price_1) / price_1)
                     best_paths_info["Index Diff"] = self.format_percent(i_price_diff / price_1)
                     best_paths_info["Rate Diff"] = self.format_percent((rate_2 - rate_1))
                     best_paths_info["Fees"] = self.format_percent((fee_1 + fee_2))
@@ -1685,16 +1706,18 @@ class FundingRateArbitrage(StrategyV2Base):
                     sum(funding_payment.amount for funding_payment in funding_arbitrage_info["funding_payments"]) \
                     / self.config.position_size_quote
                 price_1, price_2 = funding_arbitrage_info["price_1"], funding_arbitrage_info["price_2"]
+                imn_price_1, imn_price_2 = funding_arbitrage_info["imn_price_1"], funding_arbitrage_info["imn_price_2"]
                 rate_1, rate_2 = funding_arbitrage_info["rate_1"], funding_arbitrage_info["rate_2"]
                 fee_1, fee_2 = funding_arbitrage_info["fee_1"], funding_arbitrage_info["fee_2"]
                 i_price_diff = funding_arbitrage_info["i_price_diff"]
                 arbitrage_info["Px Diff"] = self.format_percent((price_2 - price_1) / price_1)
+                arbitrage_info["IMN Px Diff"] = self.format_percent((imn_price_2 - imn_price_1) / price_1)
                 arbitrage_info["Ix Diff"] = self.format_percent(i_price_diff / price_1)
                 arbitrage_info["Fd Diff"] = self.format_percent(rate_2 - rate_1)
                 # arbitrage_info["Fee1+Fee2"] = self.format_percent(fee_1 + fee_2)
-                c_price_1, _ = self.get_price_and_fee_with_cache( \
+                c_price_1, _, __ = self.get_price_and_fee_with_cache( \
                     {}, funding_arbitrage_info["connector_1"], token, TradeType.SELL)
-                c_price_2, _ = self.get_price_and_fee_with_cache( \
+                c_price_2, _, __ = self.get_price_and_fee_with_cache( \
                     {}, funding_arbitrage_info["connector_2"], token, TradeType.BUY)
                 executors = self.get_executors(funding_arbitrage_info["executors_ids"])
                 if len(executors) != 2:
@@ -1750,10 +1773,12 @@ class FundingRateArbitrage(StrategyV2Base):
                     arbitrage_info['Conn 2'] = connector_2.replace('_perpetual', '')
                     arbitrage_info['Arb Type'] = funding_arbitrage_info.get("arbitrage_type", self.ARB_TYPE_FUNDING)
                     price_1, price_2 = funding_arbitrage_info["price_1"], funding_arbitrage_info["price_2"]
+                    imn_price_1, imn_price_2 = funding_arbitrage_info["imn_price_1"], funding_arbitrage_info["imn_price_2"]
                     rate_1, rate_2 = funding_arbitrage_info["rate_1"], funding_arbitrage_info["rate_2"]
                     fee_1, fee_2 = funding_arbitrage_info["fee_1"], funding_arbitrage_info["fee_2"]
                     i_price_diff = funding_arbitrage_info["i_price_diff"]
                     arbitrage_info["Px Diff"] = self.format_percent((price_2 - price_1) / price_1)
+                    arbitrage_info["IMN Px Diff"] = self.format_percent((imn_price_2 - imn_price_1) / price_1)
                     arbitrage_info["Ix Diff"] = self.format_percent(i_price_diff / price_1)
                     arbitrage_info["Fd Diff"] = self.format_percent(rate_2 - rate_1)
                     arbitrage_info["Rate 1"] = self.format_percent(rate_1)
@@ -1897,6 +1922,7 @@ class FundingRateArbitrage(StrategyV2Base):
                             telegram_message += f"Conn 2          : {item['Conn 2']}\n"
                             telegram_message += f"Arb Type        : {item['Arb Type']}\n"
                             telegram_message += f"Px Diff         : {item['Px Diff']}\n"
+                            telegram_message += f"IMN Px Diff     : {item['IMN Px Diff']}\n"
                             telegram_message += f"Ix Diff         : {item['Ix Diff']}\n"
                             telegram_message += f"Fd Diff         : {item['Fd Diff']}\n"
                             telegram_message += f"Rate 1          : {item['Rate 1']}\n"
