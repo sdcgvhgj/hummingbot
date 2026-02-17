@@ -1086,16 +1086,22 @@ class FundingRateArbitrage(StrategyV2Base):
             price_profitability = (imn_price_2 - imn_price_1 - i_price_diff) / price_1
             is_funding_type = arbitrage_type == self.ARB_TYPE_FUNDING
             is_price_type = arbitrage_type == self.ARB_TYPE_PRICE
+            if expected_profitability is None:
+                self.logger().error("expected_profitability is None")
+            if funding_rate_diff is None:
+                self.logger().error("funding_rate_diff is None")
+            if price_profitability is None:
+                self.logger().error("price_profitability is None")
 
             if is_funding_type:
-                open_condition = expected_profitability >= self.config.min_trade_profitability \
-                    and funding_rate_diff >= self.config.min_funding_profitability \
-                    and price_profitability >= self.config.min_price_diff
+                open_condition = float(expected_profitability) >= float(self.config.min_trade_profitability) \
+                    and float(funding_rate_diff) >= float(self.config.min_funding_profitability) \
+                    and float(price_profitability) >= float(self.config.min_price_diff)
             else:
-                open_condition = expected_profitability >= self.config.min_trade_profitability \
-                    and price_profitability >= self.config.min_price_diff \
-                    and funding_rate_diff > 0 \
-                    and funding_rate_diff < self.config.min_funding_profitability
+                open_condition = float(expected_profitability) >= float(self.config.min_trade_profitability) \
+                    and float(price_profitability) >= float(self.config.min_price_diff) \
+                    and float(funding_rate_diff) > float(0) \
+                    and float(funding_rate_diff) < float(self.config.min_funding_profitability)
             
             if not open_condition:
                 continue
