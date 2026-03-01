@@ -1408,15 +1408,15 @@ class FundingRateArbitrage(StrategyV2Base):
                 rate_diff = rate_2 - rate_1
                 price_diff = (c_price_2 - c_price_1 - i_price_diff) / c_price_1
                 profitability = rate_diff + price_diff - fee_1 - fee_2
-                if price_diff < 0 and profitability < self.config.min_take_profit:
-                    stop_loss_condition = True
-                    stop_loss_type = "1"
-                elif rate_diff < 0 and profitability < self.config.min_take_profit:
+                # if price_diff < 0 and profitability < self.config.min_take_profit:
+                #     stop_loss_condition = True
+                #     stop_loss_type = "1"
+                if rate_diff < 0 and profitability < self.config.min_take_profit:
                     stop_loss_condition = True
                     stop_loss_type = "2"
-                elif price_diff < self.config.min_price_diff and rate_diff < self.config.min_funding_profitability:
-                    stop_loss_condition = True
-                    stop_loss_type = "3"
+                # elif price_diff < self.config.min_price_diff and rate_diff < self.config.min_funding_profitability:
+                #     stop_loss_condition = True
+                #     stop_loss_type = "3"
             if is_price_type_arb and len(funding_arbitrage_info["funding_payments"]) >= 2 and not take_profit_condition:
                 current_holding_seconds = self.current_timestamp - funding_arbitrage_info.get("start_time", 0)
                 interval = funding_arbitrage_info.get("interval_1", None) or funding_arbitrage_info.get("interval_2", None)
