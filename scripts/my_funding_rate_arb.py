@@ -659,7 +659,8 @@ class FundingRateArbitrage(StrategyV2Base):
             quote_volume=self.config.position_size_quote,
             is_buy=side == TradeType.BUY,
         ).result_price)
-        price = self._ema_update_and_get(connector_name, trading_pair, side, raw_price)
+        # price = self._ema_update_and_get(connector_name, trading_pair, side, raw_price)
+        price = raw_price # EMA smoothing disabled for now.
 
         imn_price = Decimal(self.market_data_provider.get_price_for_quote_volume(
             connector_name=connector_name,
