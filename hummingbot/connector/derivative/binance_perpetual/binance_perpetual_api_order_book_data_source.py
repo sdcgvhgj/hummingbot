@@ -39,6 +39,7 @@ class BinancePerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         self._domain = domain
         self._trading_pairs: List[str] = trading_pairs
         self._message_queue: Dict[str, asyncio.Queue] = defaultdict(asyncio.Queue)
+        self._last_funding_interval: Dict[str, Optional[int]] = {}
         self._trade_messages_queue_key = CONSTANTS.TRADE_STREAM_ID
         self._diff_messages_queue_key = CONSTANTS.DIFF_STREAM_ID
         self._funding_info_messages_queue_key = CONSTANTS.FUNDING_INFO_STREAM_ID
@@ -51,14 +52,38 @@ class BinancePerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
 
     async def get_funding_info(self, trading_pair: str) -> FundingInfo:
         symbol_info: Dict[str, Any] = await self._request_complete_funding_info(trading_pair)
+
+        # Fetch funding interval from /fapi/v1/fundingInfo
+        funding_interval = await self._fetch_funding_interval(trading_pair)
+        self._last_funding_interval[trading_pair] = funding_interval
+
         funding_info = FundingInfo(
             trading_pair=trading_pair,
             index_price=Decimal(symbol_info["indexPrice"]),
             mark_price=Decimal(symbol_info["markPrice"]),
             next_funding_utc_timestamp=int(float(symbol_info["nextFundingTime"]) * 1e-3),
             rate=Decimal(symbol_info["lastFundingRate"]),
+            funding_interval=funding_interval,
         )
         return funding_info
+
+    async def _fetch_funding_interval(self, trading_pair: str) -> Optional[int]:
+        """Fetch fundingIntervalHours from /fapi/v1/fundingInfo and convert to seconds."""
+        try:
+            ex_trading_pair = await self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
+            data = await self._connector._api_get(
+                path_url=CONSTANTS.FUNDING_INFO_URL,
+                params={},
+            )
+            for item in data:
+                if item.get("symbol") == ex_trading_pair:
+                    interval_hours = item.get("fundingIntervalHours")
+                    if interval_hours is not None:
+                        return int(float(interval_hours)) * 3600
+            return None
+        except Exception:
+            self.logger().warning(f"Failed to fetch funding interval for {trading_pair}", exc_info=True)
+            return None
 
     async def _request_order_book_snapshot(self, trading_pair: str) -> Dict[str, Any]:
         ex_trading_pair = await self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
@@ -192,6 +217,7 @@ class BinancePerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             mark_price=Decimal(data["p"]),
             next_funding_utc_timestamp=int(float(data["T"]) * 1e-3),
             rate=Decimal(data["r"]),
+            funding_interval=self._last_funding_interval.get(trading_pair),
         )
 
         message_queue.put_nowait(funding_info)
