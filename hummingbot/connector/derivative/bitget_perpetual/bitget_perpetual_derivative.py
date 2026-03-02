@@ -56,6 +56,7 @@ class BitgetPerpetualDerivative(PerpetualDerivativePyBase):
         self.bitget_perpetual_passphrase = bitget_perpetual_passphrase
         self._trading_required = trading_required
         self._trading_pairs = trading_pairs
+        self._domain = CONSTANTS.DEFAULT_DOMAIN
         self._last_trade_history_timestamp = None
 
         self._margin_mode = MarginMode.CROSS

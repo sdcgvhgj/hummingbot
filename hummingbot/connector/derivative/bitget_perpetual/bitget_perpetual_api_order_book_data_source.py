@@ -1,4 +1,5 @@
 import asyncio
+import time
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
@@ -12,7 +13,7 @@ from hummingbot.core.data_type.order_book import OrderBookMessage
 from hummingbot.core.data_type.order_book_message import OrderBookMessageType
 from hummingbot.core.data_type.perpetual_api_order_book_data_source import PerpetualAPIOrderBookDataSource
 from hummingbot.core.utils.tracking_nonce import NonceCreator
-from hummingbot.core.web_assistant.connections.data_types import RESTMethod, WSJSONRequest
+from hummingbot.core.web_assistant.connections.data_types import RESTMethod, WSJSONRequest, WSPlainTextRequest
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 from hummingbot.core.web_assistant.ws_assistant import WSAssistant
 
@@ -43,7 +44,7 @@ class BitgetPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         rest_assistant = await self._api_factory.get_rest_assistant()
 
         # Get ticker info for mark price, index price, last price
-        ticker_url = web_utils.get_rest_url_for_endpoint(endpoint=CONSTANTS.PUBLIC_TICKER_ENDPOINT)
+        ticker_url = web_utils.public_rest_url(path_url=CONSTANTS.PUBLIC_TICKER_ENDPOINT)
         ticker_response = await rest_assistant.execute_request(
             url=ticker_url,
             throttler_limit_id=CONSTANTS.PUBLIC_TICKER_ENDPOINT,
@@ -53,7 +54,7 @@ class BitgetPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         ticker_data = ticker_response["data"][0]
 
         # Get funding rate
-        funding_url = web_utils.get_rest_url_for_endpoint(endpoint=CONSTANTS.PUBLIC_FUNDING_RATE_ENDPOINT)
+        funding_url = web_utils.public_rest_url(path_url=CONSTANTS.PUBLIC_FUNDING_RATE_ENDPOINT)
         funding_response = await rest_assistant.execute_request(
             url=funding_url,
             throttler_limit_id=CONSTANTS.PUBLIC_FUNDING_RATE_ENDPOINT,
@@ -63,7 +64,7 @@ class BitgetPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         funding_data = funding_response["data"][0]
 
         # Get funding time for next funding timestamp
-        funding_time_url = web_utils.get_rest_url_for_endpoint(endpoint=CONSTANTS.PUBLIC_FUNDING_TIME_ENDPOINT)
+        funding_time_url = web_utils.public_rest_url(path_url=CONSTANTS.PUBLIC_FUNDING_TIME_ENDPOINT)
         funding_time_response = await rest_assistant.execute_request(
             url=funding_time_url,
             throttler_limit_id=CONSTANTS.PUBLIC_FUNDING_TIME_ENDPOINT,
@@ -72,12 +73,12 @@ class BitgetPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         )
         funding_time_data = funding_time_response["data"][0]
 
-        # Determine funding interval from ratePeriod if available
-        funding_interval = None
+        # Determine funding interval from ratePeriod (in hours, convert to seconds)
+        funding_interval = 28800  # default 8h in seconds
         rate_period = funding_time_data.get("ratePeriod")
         if rate_period is not None:
             try:
-                funding_interval = int(rate_period) * 60
+                funding_interval = int(rate_period) * 3600
             except (ValueError, TypeError):
                 pass
 
@@ -97,6 +98,7 @@ class BitgetPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             try:
                 ws = await self._get_connected_websocket_assistant(web_utils.get_ws_public_url())
                 await self._subscribe_to_channels(ws, self._trading_pairs)
+                self._last_ws_message_sent_timestamp = time.time()
                 await self._process_websocket_messages(ws)
             except asyncio.CancelledError:
                 raise
@@ -158,10 +160,18 @@ class BitgetPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
     async def _process_websocket_messages(self, websocket_assistant: WSAssistant):
         while True:
             try:
-                await super()._process_websocket_messages(websocket_assistant=websocket_assistant)
+                seconds_until_next_ping = (
+                    CONSTANTS.WS_HEARTBEAT_TIME_INTERVAL
+                    - (time.time() - self._last_ws_message_sent_timestamp)
+                )
+                await asyncio.wait_for(
+                    super()._process_websocket_messages(websocket_assistant=websocket_assistant),
+                    timeout=max(seconds_until_next_ping, 1),
+                )
             except asyncio.TimeoutError:
-                ping_request = WSJSONRequest(payload=CONSTANTS.PUBLIC_WS_PING_REQUEST)
+                ping_request = WSPlainTextRequest(payload="ping")
                 await websocket_assistant.send(ping_request)
+                self._last_ws_message_sent_timestamp = time.time()
 
     def _channel_originating_message(self, event_message: Dict[str, Any]) -> str:
         channel = ""
@@ -272,7 +282,7 @@ class BitgetPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         product_type = await self._connector.product_type_associated_to_trading_pair(trading_pair)
 
         rest_assistant = await self._api_factory.get_rest_assistant()
-        url = web_utils.get_rest_url_for_endpoint(endpoint=CONSTANTS.PUBLIC_ORDERBOOK_ENDPOINT)
+        url = web_utils.public_rest_url(path_url=CONSTANTS.PUBLIC_ORDERBOOK_ENDPOINT)
         params = {
             "symbol": symbol,
             "productType": product_type,

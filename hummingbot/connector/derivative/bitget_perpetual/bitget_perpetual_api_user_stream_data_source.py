@@ -8,7 +8,7 @@ from hummingbot.connector.derivative.bitget_perpetual import (
 )
 from hummingbot.connector.derivative.bitget_perpetual.bitget_perpetual_auth import BitgetPerpetualAuth
 from hummingbot.core.data_type.user_stream_tracker_data_source import UserStreamTrackerDataSource
-from hummingbot.core.web_assistant.connections.data_types import WSJSONRequest
+from hummingbot.core.web_assistant.connections.data_types import WSJSONRequest, WSPlainTextRequest
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 from hummingbot.core.web_assistant.ws_assistant import WSAssistant
 from hummingbot.logger import HummingbotLogger
@@ -83,14 +83,16 @@ class BitgetPerpetualUserStreamDataSource(UserStreamTrackerDataSource):
         # Wait for auth response
         async for ws_response in ws.iter_messages():
             data = ws_response.data
-            if isinstance(data, dict) and data.get("event") == "login":
-                if data.get("code") == "0":
-                    self.logger().info("Bitget private channel authentication success.")
-                else:
-                    error_msg = f"Bitget private channel authentication failed: {data.get('msg', '')}"
-                    self.logger().error(error_msg)
-                    raise IOError(error_msg)
+            if not isinstance(data, dict):
+                continue
+            event = data.get("event", "")
+            if event == "login" and str(data.get("code")) == "0":
+                self.logger().info("Bitget private channel authentication success.")
                 break
+            elif event in ("login", "error"):
+                error_msg = f"Bitget private channel authentication failed: code={data.get('code', '?')} msg={data.get('msg', '')}"
+                self.logger().error(error_msg)
+                raise IOError(error_msg)
 
     async def _subscribe_channels(self, ws: WSAssistant):
         try:
@@ -149,7 +151,7 @@ class BitgetPerpetualUserStreamDataSource(UserStreamTrackerDataSource):
 
     async def _ping_server(self, ws: WSAssistant):
         ping_time = self._time()
-        ping_request = WSJSONRequest(payload=CONSTANTS.PUBLIC_WS_PING_REQUEST)
+        ping_request = WSPlainTextRequest(payload="ping")
         await ws.send(request=ping_request)
         self._last_ws_message_sent_timestamp = ping_time
 

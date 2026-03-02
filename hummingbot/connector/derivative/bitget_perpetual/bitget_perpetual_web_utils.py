@@ -54,7 +54,7 @@ async def get_current_server_time(
     throttler = throttler or create_throttler()
     api_factory = build_api_factory_without_time_synchronizer_pre_processor(throttler=throttler)
     rest_assistant = await api_factory.get_rest_assistant()
-    url = get_rest_url_for_endpoint(endpoint=CONSTANTS.PUBLIC_TIME_ENDPOINT)
+    url = public_rest_url(path_url=CONSTANTS.PUBLIC_TIME_ENDPOINT)
     response = await rest_assistant.execute_request(
         url=url,
         throttler_limit_id=CONSTANTS.PUBLIC_TIME_ENDPOINT,
@@ -64,11 +64,12 @@ async def get_current_server_time(
     return server_time
 
 
-def get_rest_url_for_endpoint(
-    endpoint: str,
-    domain: str = CONSTANTS.DEFAULT_DOMAIN,
-) -> str:
-    return REST_URL + endpoint
+def public_rest_url(path_url: str, domain: str = CONSTANTS.DEFAULT_DOMAIN) -> str:
+    return REST_URL + path_url
+
+
+def private_rest_url(path_url: str, domain: str = CONSTANTS.DEFAULT_DOMAIN) -> str:
+    return REST_URL + path_url
 
 
 def get_ws_public_url(domain: str = CONSTANTS.DEFAULT_DOMAIN) -> str:

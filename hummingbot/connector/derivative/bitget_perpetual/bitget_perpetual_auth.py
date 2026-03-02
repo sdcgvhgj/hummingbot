@@ -53,7 +53,7 @@ class BitgetPerpetualAuth(AuthBase):
         return request
 
     def get_ws_auth_payload(self) -> Dict[str, Any]:
-        timestamp = str(int(time.time()))
+        timestamp = str(int(time.time() * 1000))
         message = timestamp + "GET" + "/user/verify"
         signature = self._sign(message)
 
