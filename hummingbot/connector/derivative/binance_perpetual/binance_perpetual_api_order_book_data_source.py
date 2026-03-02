@@ -58,13 +58,14 @@ class BinancePerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         if not self._funding_interval_fetched:
             await self._fetch_all_funding_intervals()
 
+        ex_symbol = await self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
         funding_info = FundingInfo(
             trading_pair=trading_pair,
             index_price=Decimal(symbol_info["indexPrice"]),
             mark_price=Decimal(symbol_info["markPrice"]),
             next_funding_utc_timestamp=int(float(symbol_info["nextFundingTime"]) * 1e-3),
             rate=Decimal(symbol_info["lastFundingRate"]),
-            funding_interval=self._last_funding_interval.get(trading_pair),
+            funding_interval=self._last_funding_interval.get(ex_symbol),
         )
         return funding_info
 
@@ -75,21 +76,12 @@ class BinancePerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
                 path_url=CONSTANTS.FUNDING_INFO_URL,
                 params={},
             )
-            # Build exchange_symbol -> interval_seconds mapping
-            interval_by_symbol: Dict[str, int] = {}
+            # Cache all symbols' funding intervals (exchange_symbol -> seconds)
             for item in data:
                 symbol = item.get("symbol")
                 interval_hours = item.get("fundingIntervalHours")
                 if symbol and interval_hours is not None:
-                    interval_by_symbol[symbol] = int(float(interval_hours)) * 3600
-
-            # Map to trading pairs
-            for trading_pair in self._trading_pairs:
-                try:
-                    ex_symbol = await self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
-                    self._last_funding_interval[trading_pair] = interval_by_symbol.get(ex_symbol)
-                except Exception:
-                    pass
+                    self._last_funding_interval[symbol] = int(float(interval_hours)) * 3600
 
             self._funding_interval_fetched = True
         except Exception:
@@ -227,7 +219,7 @@ class BinancePerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             mark_price=Decimal(data["p"]),
             next_funding_utc_timestamp=int(float(data["T"]) * 1e-3),
             rate=Decimal(data["r"]),
-            funding_interval=self._last_funding_interval.get(trading_pair),
+            funding_interval=self._last_funding_interval.get(data["s"]),
         )
 
         message_queue.put_nowait(funding_info)

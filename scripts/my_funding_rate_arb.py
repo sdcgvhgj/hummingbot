@@ -2114,8 +2114,11 @@ class FundingRateArbitrage(StrategyV2Base):
                                 self.logger().debug(f"[dynamic-topk] Skip {base} ({c1}->{c2}) due to time difference: {self.format_utc(t1)} - {self.format_utc(t2)}")
                                 continue
 
-                            interval_1 = getattr(f1, "funding_interval", None) or self.funding_payment_interval_map.get(c1)
-                            interval_2 = getattr(f2, "funding_interval", None) or self.funding_payment_interval_map.get(c2)
+                            interval_1 = getattr(f1, "funding_interval", None)
+                            interval_2 = getattr(f2, "funding_interval", None)
+                            if interval_1 is None or interval_2 is None:
+                                self.logger().warning(f"[dynamic-topk] Skip {base} ({c1}->{c2}): missing funding_interval (c1={interval_1}, c2={interval_2})")
+                                continue
                             policy = str(getattr(self.config, "funding_interval_policy", "strict")).lower()
                             if policy != "off":
                                 try:
