@@ -501,6 +501,7 @@ class FundingRateArbitrage(StrategyV2Base):
     funding_rate_cap_eps = Decimal("0.000001")
     funding_payment_interval_map = {
         "binance_perpetual": 60 * 60 * 8,
+        "bitget_perpetual": 60 * 60 * 8,
         "hyperliquid_perpetual": 60 * 60 * 1,
         "okx_perpetual": 60 * 60 * 8,
         "bybit_perpetual": 60 * 60 * 8,
@@ -508,6 +509,8 @@ class FundingRateArbitrage(StrategyV2Base):
     quote_impact_value_map = {
         "okx_perpetual": 200 * 10, # 200 × Max leverage allowed for this perpetual
         "bybit_perpetual": 3750, # information not retrievable by API
+        "binance_perpetual": 200 * 10,
+        "bitget_perpetual": 200 * 10,
     }
     position_mode_map = {
         "hyperliquid_perpetual": PositionMode.ONEWAY,
