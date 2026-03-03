@@ -698,6 +698,7 @@ class BitgetPerpetualDerivative(PerpetualDerivativePyBase):
     async def _fetch_last_fee_payment(self, trading_pair: str) -> Tuple[float, Decimal, Decimal]:
         timestamp, funding_rate, payment = 0, Decimal("-1"), Decimal("-1")
 
+        symbol = await self.exchange_symbol_associated_to_pair(trading_pair)
         product_type = await self.product_type_associated_to_trading_pair(trading_pair)
         payment_response: Dict[str, Any] = await self._api_get(
             path_url=CONSTANTS.ACCOUNT_BILLS_ENDPOINT,
@@ -707,14 +708,16 @@ class BitgetPerpetualDerivative(PerpetualDerivativePyBase):
             },
             is_auth_required=True,
         )
-        payment_data: Dict[str, Any] = payment_response["data"]["bills"]
+        payment_data: List[Dict[str, Any]] = payment_response["data"]["bills"]
 
-        if payment_data:
-            last_data = payment_data[0]
-            funding_info = self._perpetual_trading._funding_info.get(trading_pair)
-            payment = Decimal(last_data["amount"])
-            funding_rate = funding_info.rate if funding_info is not None else Decimal(0)
-            timestamp = int(last_data["cTime"]) * 1e-3
+        # Filter by symbol since the API doesn't support symbol filtering
+        for bill in payment_data:
+            if bill.get("symbol") == symbol:
+                funding_info = self._perpetual_trading._funding_info.get(trading_pair)
+                payment = Decimal(bill["amount"])
+                funding_rate = funding_info.rate if funding_info is not None else Decimal(0)
+                timestamp = int(bill["cTime"]) * 1e-3
+                break
 
         return timestamp, funding_rate, payment
 
