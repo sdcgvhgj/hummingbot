@@ -915,7 +915,7 @@ class BitgetPerpetualDerivative(PerpetualDerivativePyBase):
         )
 
         exec_price = Decimal(trade_msg["price"])
-        exec_time = int(trade_msg["cTime"]) * 1e-3
+        exec_time = int(trade_msg["fillTime"]) * 1e-3
 
         trade_update: TradeUpdate = TradeUpdate(
             trade_id=trade_msg["tradeId"],
