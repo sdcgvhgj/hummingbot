@@ -1120,7 +1120,7 @@ class FundingRateArbitrage(StrategyV2Base):
             if is_funding_type:
                 open_condition = float(expected_profitability) >= float(self.config.min_trade_profitability) \
                     and float(funding_rate_diff) >= float(self.config.min_funding_profitability) \
-                    and float(price_profitability) >= float(self.config.min_price_diff)
+                    and float(price_profitability) >= float(0)
             else:
                 open_condition = float(expected_profitability) >= float(self.config.min_trade_profitability) \
                     and float(price_profitability) >= float(self.config.min_price_diff) \
