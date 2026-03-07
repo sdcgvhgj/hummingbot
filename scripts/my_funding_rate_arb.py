@@ -2120,6 +2120,9 @@ class FundingRateArbitrage(StrategyV2Base):
                         if i == j:
                             continue
                         c1, c2 = conn_names[i], conn_names[j]
+                        if self.funding_mechanism_type_map.get(c1) != self.funding_mechanism_type_map.get(c2):
+                            self.logger().debug(f"[dynamic-topk] Skip {base} ({c1}->{c2}) due to different funding types")
+                            continue
                         p1 = conn_pair_map[c1]
                         p2 = conn_pair_map[c2]
                         try:
