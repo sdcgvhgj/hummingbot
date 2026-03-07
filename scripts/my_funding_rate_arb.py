@@ -512,6 +512,16 @@ class FundingRateArbitrage(StrategyV2Base):
         "binance_perpetual": 200 * 10,
         "bitget_perpetual": 200 * 10,
     }
+    # Funding calculation mechanism type mapping.
+    # Only exchanges with the same funding type are paired for arbitrage.
+    # OKX & Bybit use one mechanism; Binance & Bitget use another.
+    funding_mechanism_type_map = {
+        "okx_perpetual": "A",
+        "bybit_perpetual": "A",
+        "binance_perpetual": "B",
+        "bitget_perpetual": "B",
+    }
+
     position_mode_map = {
         "hyperliquid_perpetual": PositionMode.ONEWAY,
         "okx_perpetual" : PositionMode.HEDGE,
@@ -703,6 +713,11 @@ class FundingRateArbitrage(StrategyV2Base):
         for connector_1 in valid_connectors:
             for connector_2 in valid_connectors:
                 if connector_1 != connector_2:
+                    # Only pair exchanges with the same funding mechanism type
+                    ft1 = self.funding_mechanism_type_map.get(connector_1)
+                    ft2 = self.funding_mechanism_type_map.get(connector_2)
+                    if ft1 is not None and ft2 is not None and ft1 != ft2:
+                        continue
                     time_to_funding_1 = funding_info_report[connector_1].next_funding_utc_timestamp - self.current_timestamp
                     time_to_funding_2 = funding_info_report[connector_2].next_funding_utc_timestamp - self.current_timestamp
                     if funding_time_check and abs(time_to_funding_1 - time_to_funding_2) > 60:
@@ -774,6 +789,11 @@ class FundingRateArbitrage(StrategyV2Base):
         for connector_1 in valid_connectors:
             for connector_2 in valid_connectors:
                 if connector_1 == connector_2:
+                    continue
+                # Only pair exchanges with the same funding mechanism type
+                ft1 = self.funding_mechanism_type_map.get(connector_1)
+                ft2 = self.funding_mechanism_type_map.get(connector_2)
+                if ft1 is not None and ft2 is not None and ft1 != ft2:
                     continue
                 t1 = funding_info_report[connector_1].next_funding_utc_timestamp - self.current_timestamp
                 t2 = funding_info_report[connector_2].next_funding_utc_timestamp - self.current_timestamp
