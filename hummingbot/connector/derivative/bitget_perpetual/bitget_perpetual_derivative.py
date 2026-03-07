@@ -543,7 +543,7 @@ class BitgetPerpetualDerivative(PerpetualDerivativePyBase):
 
             order_update: OrderUpdate = OrderUpdate(
                 trading_pair=tracked_order.trading_pair,
-                update_timestamp=self.current_timestamp,
+                update_timestamp=int(updated_order_data["uTime"]) * 1e-3,
                 new_state=CONSTANTS.STATE_TYPES[updated_order_data["state"]],
                 client_order_id=client_order_id,
                 exchange_order_id=updated_order_data["orderId"],
@@ -800,7 +800,7 @@ class BitgetPerpetualDerivative(PerpetualDerivativePyBase):
         if updatable_order is not None:
             new_order_update: OrderUpdate = OrderUpdate(
                 trading_pair=updatable_order.trading_pair,
-                update_timestamp=self.current_timestamp,
+                update_timestamp=int(order_msg['uTime']) * 1e-3,
                 new_state=order_status,
                 client_order_id=client_order_id,
                 exchange_order_id=order_msg["orderId"],
@@ -915,7 +915,7 @@ class BitgetPerpetualDerivative(PerpetualDerivativePyBase):
         )
 
         exec_price = Decimal(trade_msg["price"])
-        exec_time = int(trade_msg["fillTime"]) * 1e-3
+        exec_time = int(trade_msg["cTime"]) * 1e-3
 
         trade_update: TradeUpdate = TradeUpdate(
             trade_id=trade_msg["tradeId"],
