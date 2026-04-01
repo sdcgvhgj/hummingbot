@@ -1155,28 +1155,28 @@ class FundingRateArbitrage(StrategyV2Base):
                 continue
 
             if self.is_stopping_creating_actions:
-                self.logger().debug(
-                    f"Stopping creating actions, skipping creation of executors for {token}")
+                self.logger().info(
+                    f"[Balance Passed] Stopping creating actions, skipping creation of executors for {token}")
                 continue
 
             if self._mem_guard_triggered:
-                self.logger().debug(
-                    f"[mem-guard] Mem guard triggered, skipping creation of executors for {token}")
+                self.logger().info(
+                    f"[Balance Passed] Mem guard triggered, skipping creation of executors for {token}")
                 continue
                 
             if not self.good_time_to_trade():
-                self.logger().debug(f"[good_time_to_trade] Not good time to trade, skipping creation of executors for {token}")
+                self.logger().info(f"[Balance Passed] Not good time to trade, skipping creation of executors for {token}")
                 continue
 
             # 连续确认：记录本秒达标并检查是否满足最近N秒连续达标
             now_sec = int(self.current_timestamp)
             self._note_condition_hit(token, now_sec)
             if not self._has_recent_consecutive_hits(token, now_sec):
-                self.logger().debug(
-                    f"[consec] consecutive_check_fail token={token} now={now_sec} N={getattr(self.config, 'condition_consecutive_required', 1)}")
+                self.logger().info(
+                    f"[Balance Passed] consecutive_check_fail token={token} now={now_sec} N={getattr(self.config, 'condition_consecutive_required', 1)}")
                 continue
 
-            self.logger().info("Starting executors...")
+            self.logger().info("[Balance Passed] Starting executors...")
 
             self.logger().info(
                 f"Best Combination: {token} | {connector_1} | {connector_2} | {trade_side} | "
