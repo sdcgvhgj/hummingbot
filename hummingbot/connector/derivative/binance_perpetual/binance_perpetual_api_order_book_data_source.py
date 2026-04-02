@@ -153,12 +153,21 @@ class BinancePerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         channel = ""
         if "result" not in event_message:
             stream_name = event_message.get("stream")
-            if "@depth" in stream_name:
-                channel = self._diff_messages_queue_key
-            elif "@aggTrade" in stream_name:
-                channel = self._trade_messages_queue_key
-            elif "@markPrice" in stream_name:
-                channel = self._funding_info_messages_queue_key
+            if stream_name is not None:
+                if "@depth" in stream_name:
+                    channel = self._diff_messages_queue_key
+                elif "@aggTrade" in stream_name:
+                    channel = self._trade_messages_queue_key
+                elif "@markPrice" in stream_name:
+                    channel = self._funding_info_messages_queue_key
+            else:
+                event_type = event_message.get("e", "")
+                if "depthUpdate" in event_type:
+                    channel = self._diff_messages_queue_key
+                elif "aggTrade" in event_type:
+                    channel = self._trade_messages_queue_key
+                elif "markPriceUpdate" in event_type:
+                    channel = self._funding_info_messages_queue_key
         return channel
 
     async def _parse_order_book_diff_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
