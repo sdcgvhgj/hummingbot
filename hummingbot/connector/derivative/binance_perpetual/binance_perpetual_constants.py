@@ -14,8 +14,8 @@ TESTNET_BASE_URL = "https://testnet.binancefuture.com/fapi/"
 PERPETUAL_WS_URL = "wss://fstream.binance.com/"
 TESTNET_WS_URL = "wss://stream.binancefuture.com/"
 
-PUBLIC_WS_ENDPOINT = "public/stream"
-PRIVATE_WS_ENDPOINT = "private/ws"
+PUBLIC_WS_ENDPOINT = "stream"
+PRIVATE_WS_ENDPOINT = "ws"
 
 TIME_IN_FORCE_GTC = "GTC"  # Good till cancelled
 TIME_IN_FORCE_GTX = "GTX"  # Good Till Crossing
