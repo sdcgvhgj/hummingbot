@@ -119,34 +119,87 @@ class BinancePerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         await ws.connect(ws_url=url, ping_timeout=CONSTANTS.HEARTBEAT_TIME_INTERVAL)
         return ws
 
+    async def _connected_market_websocket_assistant(self) -> WSAssistant:
+        url = f"{web_utils.wss_url(CONSTANTS.MARKET_WS_ENDPOINT, self._domain)}"
+        ws: WSAssistant = await self._api_factory.get_ws_assistant()
+        await ws.connect(ws_url=url, ping_timeout=CONSTANTS.HEARTBEAT_TIME_INTERVAL)
+        return ws
+
+    async def listen_for_subscriptions(self):
+        ws_public: Optional[WSAssistant] = None
+        ws_market: Optional[WSAssistant] = None
+        while True:
+            try:
+                ws_public = await self._connected_websocket_assistant()
+                ws_market = await self._connected_market_websocket_assistant()
+                await self._subscribe_public_channels(ws_public)
+                await self._subscribe_market_channels(ws_market)
+                self.logger().info("Subscribed to public order book, trade and funding info channels...")
+                await asyncio.gather(
+                    self._process_websocket_messages(websocket_assistant=ws_public),
+                    self._process_websocket_messages(websocket_assistant=ws_market),
+                )
+            except asyncio.CancelledError:
+                raise
+            except ConnectionError as connection_exception:
+                self.logger().warning(f"The websocket connection was closed ({connection_exception})")
+                await self._sleep(5.0)
+            except Exception:
+                self.logger().exception(
+                    "Unexpected error occurred when listening to order book streams. Retrying in 5 seconds...",
+                )
+                await self._sleep(1.0)
+            finally:
+                ws_public and await ws_public.disconnect()
+                ws_market and await ws_market.disconnect()
+
     async def _subscribe_channels(self, ws: WSAssistant):
-        """
-        Subscribes to the trade events and diff orders events through the provided websocket connection.
-        :param ws: the websocket assistant used to connect to the exchange
-        """
+        pass
+
+    async def _subscribe_public_channels(self, ws: WSAssistant):
+        """Subscribes to order book depth streams on the /public endpoint."""
         try:
-            stream_id_channel_pairs = [
-                (CONSTANTS.DIFF_STREAM_ID, "@depth20@100ms"),
-                (CONSTANTS.TRADE_STREAM_ID, "@aggTrade"),
-                (CONSTANTS.FUNDING_INFO_STREAM_ID, "@markPrice"),
-            ]
-            for stream_id, channel in stream_id_channel_pairs:
-                params = []
-                for trading_pair in self._trading_pairs:
-                    symbol = await self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
-                    params.append(f"{symbol.lower()}{channel}")
-                payload = {
-                    "method": "SUBSCRIBE",
-                    "params": params,
-                    "id": stream_id,
-                }
-                subscribe_request: WSJSONRequest = WSJSONRequest(payload)
-                await ws.send(subscribe_request)
-            self.logger().info("Subscribed to public order book, trade and funding info channels...")
+            params = []
+            for trading_pair in self._trading_pairs:
+                symbol = await self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
+                params.append(f"{symbol.lower()}@depth20@100ms")
+            payload = {
+                "method": "SUBSCRIBE",
+                "params": params,
+                "id": CONSTANTS.DIFF_STREAM_ID,
+            }
+            await ws.send(WSJSONRequest(payload))
         except asyncio.CancelledError:
             raise
         except Exception:
-            self.logger().exception("Unexpected error occurred subscribing to order book trading and delta streams...")
+            self.logger().exception("Unexpected error occurred subscribing to public order book streams...")
+            raise
+
+    async def _subscribe_market_channels(self, ws: WSAssistant):
+        """Subscribes to aggTrade and markPrice streams on the /market endpoint."""
+        try:
+            trade_params = []
+            funding_params = []
+            for trading_pair in self._trading_pairs:
+                symbol = await self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
+                trade_params.append(f"{symbol.lower()}@aggTrade")
+                funding_params.append(f"{symbol.lower()}@markPrice")
+            payload = {
+                "method": "SUBSCRIBE",
+                "params": trade_params,
+                "id": CONSTANTS.TRADE_STREAM_ID,
+            }
+            await ws.send(WSJSONRequest(payload))
+            payload = {
+                "method": "SUBSCRIBE",
+                "params": funding_params,
+                "id": CONSTANTS.FUNDING_INFO_STREAM_ID,
+            }
+            await ws.send(WSJSONRequest(payload))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.logger().exception("Unexpected error occurred subscribing to market streams...")
             raise
 
     def _channel_originating_message(self, event_message: Dict[str, Any]) -> str:
