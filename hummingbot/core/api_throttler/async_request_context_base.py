@@ -71,22 +71,19 @@ class AsyncRequestContextBase(ABC):
                 self.flush()
 
                 if self.within_capacity():
+                    now = time.time()
+                    # Log the acquired rate limit into the tasks log
+                    if self._rate_limit is not None:
+                        new_logs = [
+                            TaskLog(timestamp=now, rate_limit=self._rate_limit, weight=self._rate_limit.weight)
+                        ] + [
+                            # Each related limit is represented as its own individual TaskLog
+                            TaskLog(timestamp=now, rate_limit=limit, weight=weight)
+                            for limit, weight in self._related_limits
+                        ]
+                        self._task_logs.extend(new_logs)
                     break
             await asyncio.sleep(self._retry_interval)
-        async with self._lock:
-            now = time.time()
-            # Each related limit is represented as it own individual TaskLog
-
-            # Log the acquired rate limit into the tasks log
-            if self._rate_limit and self._related_limits:
-                new_logs = [
-                    TaskLog(timestamp=now, rate_limit=self._rate_limit, weight=self._rate_limit.weight)
-                ] + [
-                    # Log its related limits into the tasks log as individual tasks
-                    TaskLog(timestamp=now, rate_limit=limit, weight=weight)
-                    for limit, weight in self._related_limits
-                ]
-                self._task_logs.extend(new_logs)
 
     async def __aenter__(self):
         await self.acquire()
