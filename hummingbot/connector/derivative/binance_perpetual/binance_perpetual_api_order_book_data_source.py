@@ -135,10 +135,15 @@ class BinancePerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
                 await self._subscribe_public_channels(ws_public)
                 await self._subscribe_market_channels(ws_market)
                 self.logger().info("Subscribed to public order book, trade and funding info channels...")
-                await asyncio.gather(
-                    self._process_websocket_messages(websocket_assistant=ws_public),
-                    self._process_websocket_messages(websocket_assistant=ws_market),
-                )
+                public_task = asyncio.ensure_future(
+                    self._process_websocket_messages(websocket_assistant=ws_public))
+                market_task = asyncio.ensure_future(
+                    self._process_websocket_messages(websocket_assistant=ws_market))
+                try:
+                    await asyncio.gather(public_task, market_task)
+                finally:
+                    public_task.cancel()
+                    market_task.cancel()
             except asyncio.CancelledError:
                 raise
             except ConnectionError as connection_exception:
@@ -148,13 +153,17 @@ class BinancePerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
                 self.logger().exception(
                     "Unexpected error occurred when listening to order book streams. Retrying in 5 seconds...",
                 )
-                await self._sleep(1.0)
+                await self._sleep(5.0)
             finally:
-                ws_public and await ws_public.disconnect()
-                ws_market and await ws_market.disconnect()
+                await self._on_order_stream_interruption(websocket_assistant=ws_public)
+                await self._on_order_stream_interruption(websocket_assistant=ws_market)
 
     async def _subscribe_channels(self, ws: WSAssistant):
-        pass
+        # Not used: this connector overrides listen_for_subscriptions to manage
+        # separate public/market WebSocket connections directly.
+        raise NotImplementedError(
+            "Use _subscribe_public_channels and _subscribe_market_channels instead."
+        )
 
     async def _subscribe_public_channels(self, ws: WSAssistant):
         """Subscribes to order book depth streams on the /public endpoint."""
