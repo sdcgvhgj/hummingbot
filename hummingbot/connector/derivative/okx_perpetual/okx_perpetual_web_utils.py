@@ -191,13 +191,13 @@ def _build_public_rate_limits():
         RateLimit(
             limit_id=get_rest_api_limit_id_for_endpoint(method=CONSTANTS.REST_GET_INSTRUMENTS[CONSTANTS.METHOD],
                                                         endpoint=CONSTANTS.REST_GET_INSTRUMENTS[CONSTANTS.ENDPOINT]),
-            limit=10,
+            limit=20,
             time_interval=2,
         ),
         RateLimit(
             limit_id=get_rest_api_limit_id_for_endpoint(method=CONSTANTS.REST_INDEX_TICKERS[CONSTANTS.METHOD],
                                                         endpoint=CONSTANTS.REST_INDEX_TICKERS[CONSTANTS.ENDPOINT]),
-            limit=10,
+            limit=20,
             time_interval=2,
         ),
     ]
@@ -222,7 +222,7 @@ def _build_private_pair_specific_rate_limits(trading_pairs: List[str]) -> List[R
                 limit_id=get_pair_specific_limit_id(method=CONSTANTS.REST_FUNDING_RATE_INFO[CONSTANTS.METHOD],
                                                     endpoint=CONSTANTS.REST_FUNDING_RATE_INFO[CONSTANTS.ENDPOINT],
                                                     trading_pair=trading_pair),
-                limit=10,
+                limit=20,
                 time_interval=2,
             ),
             RateLimit(
@@ -291,7 +291,7 @@ def _build_private_general_rate_limits() -> List[RateLimit]:
             limit_id=get_rest_api_limit_id_for_endpoint(method=CONSTANTS.REST_BILLS_DETAILS[CONSTANTS.METHOD],
                                                         endpoint=CONSTANTS.REST_BILLS_DETAILS[CONSTANTS.ENDPOINT]),
             limit=5,
-            time_interval=2,
+            time_interval=1,
         )
     ]
     return rate_limits

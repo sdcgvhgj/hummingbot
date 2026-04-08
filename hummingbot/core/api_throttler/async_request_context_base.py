@@ -78,15 +78,16 @@ class AsyncRequestContextBase(ABC):
             # Each related limit is represented as it own individual TaskLog
 
             # Log the acquired rate limit into the tasks log
-            if self._rate_limit and self._related_limits:
-                new_logs = [
-                    TaskLog(timestamp=now, rate_limit=self._rate_limit, weight=self._rate_limit.weight)
-                ] + [
+            new_logs = [
+                TaskLog(timestamp=now, rate_limit=self._rate_limit, weight=self._rate_limit.weight)
+            ]
+            if self._related_limits:
+                new_logs += [
                     # Log its related limits into the tasks log as individual tasks
                     TaskLog(timestamp=now, rate_limit=limit, weight=weight)
                     for limit, weight in self._related_limits
                 ]
-                self._task_logs.extend(new_logs)
+            self._task_logs.extend(new_logs)
 
     async def __aenter__(self):
         await self.acquire()

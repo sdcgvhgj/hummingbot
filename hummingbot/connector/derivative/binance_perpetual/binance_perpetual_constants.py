@@ -15,6 +15,7 @@ PERPETUAL_WS_URL = "wss://fstream.binance.com/"
 TESTNET_WS_URL = "wss://stream.binancefuture.com/"
 
 PUBLIC_WS_ENDPOINT = "public/stream"
+MARKET_WS_ENDPOINT = "market/stream"
 PRIVATE_WS_ENDPOINT = "private/ws"
 
 TIME_IN_FORCE_GTC = "GTC"  # Good till cancelled
